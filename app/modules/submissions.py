@@ -101,6 +101,12 @@ class SubmitMetaPayload(BaseModel):
     submitted_at: Optional[str] = None
 
 
+class DraftMetaPayload(BaseModel):
+    form_version: int
+    source: Literal["sunbeat_release_intake"]
+    updated_at: Optional[str] = None
+
+
 class ReleaseIntakeSubmitPayload(BaseModel):
     draft_token: Optional[str] = None
     workspace_slug: Optional[str] = None
@@ -110,6 +116,29 @@ class ReleaseIntakeSubmitPayload(BaseModel):
     tracks: List[TrackPayload] = Field(default_factory=list)
     marketing: MarketingPayload
     meta: SubmitMetaPayload
+
+
+class ReleaseIntakeDraftValues(BaseModel):
+    identification: IdentificationPayload | Dict[str, Any]
+    project: ProjectPayload | Dict[str, Any]
+    tracks: List[TrackPayload] | List[Dict[str, Any]] = Field(default_factory=list)
+    marketing: MarketingPayload | Dict[str, Any]
+
+
+class ReleaseIntakeDraftPayload(BaseModel):
+    draft_token: Optional[str] = None
+    workspace_slug: Optional[str] = None
+    current_step: Literal[
+        "intro",
+        "identification",
+        "release",
+        "tracks",
+        "marketing",
+        "review_submit",
+    ]
+    progress_percent: int = 0
+    values: Dict[str, Any]
+    meta: DraftMetaPayload
 
 
 def _validate_business_rules(payload: ReleaseIntakeSubmitPayload) -> None:
@@ -156,11 +185,137 @@ def _validate_business_rules(payload: ReleaseIntakeSubmitPayload) -> None:
                 status_code=400,
                 detail=f"Track {idx}: authors is required."
             )
+        if not _str(track.artist_profiles_status):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Track {idx}: artist_profiles_status is required."
+            )
+        if not _str(track.has_isrc):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Track {idx}: has_isrc is required."
+            )
         if track.has_isrc == "yes" and not _str(track.isrc_code):
             raise HTTPException(
                 status_code=400,
                 detail=f"Track {idx}: isrc_code is required when has_isrc=yes."
             )
+        if not _str(track.explicit_content):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Track {idx}: explicit_content is required."
+            )
+
+
+@router.post("/drafts/save")
+async def save_draft(
+    payload: ReleaseIntakeDraftPayload,
+    x_tenant_value: Optional[str] = Header(None),
+    x_tenant_type: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+    x_user_email: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    client_slug = _str(x_tenant_value) or _str(payload.workspace_slug)
+    if not client_slug:
+        raise HTTPException(status_code=400, detail="Missing client_slug (tenant)")
+
+    draft_token = _str(payload.draft_token) or str(uuid4())
+    now_iso = _utc_iso()
+
+    identification = payload.values.get("identification", {}) if payload.values else {}
+    submitter_email = _str(identification.get("submitter_email")) or _str(x_user_email) or None
+    submitter_name = _str(identification.get("submitter_name")) or None
+
+    row: Dict[str, Any] = {
+        "draft_token": draft_token,
+        "client_slug": client_slug,
+        "user_id": _str(x_user_id) or None,
+        "user_email": _str(x_user_email) or submitter_email,
+        "submitter_email": submitter_email,
+        "submitter_name": submitter_name,
+        "current_step": payload.current_step,
+        "progress_percent": payload.progress_percent,
+        "values": payload.values,
+        "meta": payload.meta.model_dump(mode="python"),
+        "status": "draft",
+        "updated_at": now_iso,
+        "created_at": now_iso,
+    }
+
+    try:
+        existing = (
+            supabase.table("release_intake_drafts")
+            .select("draft_token,created_at")
+            .eq("draft_token", draft_token)
+            .limit(1)
+            .execute()
+        )
+        if existing.data:
+            row["created_at"] = existing.data[0].get("created_at") or now_iso
+
+        draft_res = (
+            supabase.table("release_intake_drafts")
+            .upsert(row, on_conflict="draft_token")
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save draft: {exc}")
+
+    if not draft_res.data:
+        raise HTTPException(status_code=500, detail="Failed to save draft")
+
+    created = draft_res.data[0]
+
+    return {
+        "ok": True,
+        "draft_token": created.get("draft_token"),
+        "current_step": created.get("current_step"),
+        "progress_percent": created.get("progress_percent"),
+        "message": "Draft saved successfully.",
+    }
+
+
+@router.get("/drafts/{draft_token}")
+async def get_draft(
+    draft_token: str,
+    x_tenant_value: Optional[str] = Header(None),
+    x_tenant_type: Optional[str] = Header(None),
+    x_user_id: Optional[str] = Header(None),
+    x_user_email: Optional[str] = Header(None),
+    authorization: Optional[str] = Header(None),
+):
+    try:
+        draft_res = (
+            supabase.table("release_intake_drafts")
+            .select("*")
+            .eq("draft_token", draft_token)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to load draft: {exc}")
+
+    if not draft_res.data:
+        raise HTTPException(status_code=404, detail="Draft not found")
+
+    draft = draft_res.data[0]
+
+    tenant_from_header = _str(x_tenant_value)
+    tenant_from_row = _str(draft.get("client_slug"))
+    if tenant_from_header and tenant_from_row and tenant_from_header != tenant_from_row:
+        raise HTTPException(status_code=403, detail="Draft does not belong to this tenant")
+
+    return {
+        "ok": True,
+        "draft_token": draft.get("draft_token"),
+        "workspace_slug": draft.get("client_slug"),
+        "current_step": draft.get("current_step"),
+        "progress_percent": draft.get("progress_percent"),
+        "values": draft.get("values") or {},
+        "meta": draft.get("meta") or {},
+        "status": draft.get("status"),
+    }
 
 
 @router.post("")
@@ -172,7 +327,6 @@ async def create_submission(
     x_user_email: Optional[str] = Header(None),
     authorization: Optional[str] = Header(None),
 ):
-    # tenant obrigatório
     client_slug = _str(x_tenant_value) or _str(payload.workspace_slug)
     if not client_slug:
         raise HTTPException(status_code=400, detail="Missing client_slug (tenant)")
@@ -187,7 +341,6 @@ async def create_submission(
     project = payload.project
     marketing = payload.marketing
 
-    # faixa foco
     focus_track = next((t for t in payload.tracks if t.is_focus_track), None)
     focus_track_title = (
         _str(marketing.focus_track_name)
@@ -195,7 +348,6 @@ async def create_submission(
     )
 
     submission_row: Dict[str, Any] = {
-        # ids / controle
         "id": submission_id,
         "draft_token": payload.draft_token,
         "status": "submitted",
@@ -206,12 +358,10 @@ async def create_submission(
         "is_update": False,
         "edit_token": edit_token,
 
-        # tenant / user
         "client_slug": client_slug,
         "user_id": _str(x_user_id) or None,
         "user_email": _str(x_user_email) or identification.submitter_email,
 
-        # identificação / projeto
         "artist_name": identification.project_title,
         "email": identification.submitter_email,
         "release_type": identification.release_type,
@@ -219,11 +369,9 @@ async def create_submission(
         "main_title": identification.project_title,
         "genre": project.genre,
 
-        # storage / capa
         "cover_url": project.cover_file.public_url if project.cover_file else None,
         "cover_path": project.cover_file.storage_path if project.cover_file else None,
 
-        # marketing / observações
         "track_json": {
             "count": len(payload.tracks),
             "focus_track": focus_track_title,
@@ -245,7 +393,6 @@ async def create_submission(
             "has_video_asset": project.has_video_asset,
         },
 
-        # payload bruto canônico
         "payload": payload.model_dump(mode="python"),
     }
 
@@ -259,7 +406,6 @@ async def create_submission(
 
     created_submission = submission_res.data[0]
 
-    # tracks
     track_rows: List[Dict[str, Any]] = []
     for track in payload.tracks:
         track_rows.append(
@@ -289,6 +435,22 @@ async def create_submission(
                 status_code=500,
                 detail=f"Submission created but failed to create tracks: {exc}"
             )
+
+    if payload.draft_token:
+        try:
+            (
+                supabase.table("release_intake_drafts")
+                .update(
+                    {
+                        "status": "submitted",
+                        "updated_at": now_iso,
+                    }
+                )
+                .eq("draft_token", payload.draft_token)
+                .execute()
+            )
+        except Exception:
+            pass
 
     return {
         "ok": True,
