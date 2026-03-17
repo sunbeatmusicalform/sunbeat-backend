@@ -1,463 +1,467 @@
 from __future__ import annotations
 
+import logging
+import secrets
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Literal, Optional
-from uuid import uuid4
+from typing import Any, Dict, List, Optional
+from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel, Field, EmailStr
+from fastapi import APIRouter, HTTPException
 
-from app.core.supabase import supabase
+from app.core.config import settings
+from app.core.database import supabase
+from app.schemas.submission import SubmissionPayload
+from app.services.airtable import (
+    create_airtable_project,
+    create_airtable_tracks,
+    update_airtable_project_focus_track,
+)
+from app.services.email import send_edit_link_email
 
-router = APIRouter()
+logger = logging.getLogger("sunbeat.submissions")
+
+router = APIRouter(prefix="/submissions", tags=["Submissions"])
 
 
-def _utc_iso() -> str:
+def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _str(value: Any) -> str:
+def _as_uuid(value: str | UUID | None) -> str | None:
     if value is None:
-        return ""
+        return None
+    if isinstance(value, UUID):
+        return str(value)
+    return str(UUID(str(value)))
+
+
+def _generate_edit_token() -> str:
+    return secrets.token_urlsafe(24)
+
+
+def _safe_model_dump(obj: Any) -> Dict[str, Any]:
+    if obj is None:
+        return {}
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if isinstance(obj, dict):
+        return obj
+    return dict(obj)
+
+
+def _bool_from_yes_no(value: Any) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in {"yes", "sim", "true", "1"}
+
+
+def _yes_no_or_none(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"yes", "sim", "true", "1"}:
+        return "Sim"
+    if text in {"no", "não", "nao", "false", "0"}:
+        return "Não"
     return str(value).strip()
 
 
-def _bool_from_yes_no(value: Optional[str]) -> Optional[bool]:
-    if value == "yes":
-        return True
-    if value == "no":
-        return False
-    return None
+def _build_edit_url(edit_token: str, workspace_slug: str) -> str:
+    base = settings.FRONTEND_BASE_URL.rstrip("/")
+    return f"{base}/intake/{workspace_slug}?edit_token={edit_token}"
 
 
-class UploadedFileRef(BaseModel):
-    file_id: str
-    file_name: str
-    storage_path: str
-    public_url: Optional[str] = None
-    mime_type: Optional[str] = None
-    size_bytes: Optional[int] = None
-
-
-class IdentificationPayload(BaseModel):
-    submitter_name: str
-    submitter_email: EmailStr
-    project_title: str
-    release_type: Literal["single", "ep", "album"]
-
-
-class ProjectPayload(BaseModel):
-    release_date: str
-    genre: str
-    explicit_content: Literal["yes", "no"]
-    tiktok_snippet: Optional[str] = ""
-    presskit_link: Optional[str] = ""
-    has_video_asset: Literal["yes", "no", "unknown"]
-    cover_file: Optional[UploadedFileRef] = None
-
-
-class TrackPayload(BaseModel):
-    local_id: str
-    order_number: int
-    title: str
-    is_focus_track: bool = False
-
-    primary_artists: str
-    featured_artists: Optional[str] = ""
-    interpreters: str
-
-    authors: str
-    publishers: Optional[str] = ""
-    producers_musicians: Optional[str] = ""
-
-    artist_profiles_status: Literal["already_exists", "needs_creation", "mixed", ""]
-    has_isrc: Literal["yes", "no", ""]
-    isrc_code: Optional[str] = ""
-
-    explicit_content: Literal["yes", "no", ""]
-    audio_file: Optional[UploadedFileRef] = None
-    lyrics: Optional[str] = ""
-
-    track_status: Literal["draft", "ready"] = "draft"
-
-
-class MarketingPayload(BaseModel):
-    marketing_numbers: str
-    marketing_focus: str
-    marketing_objectives: str
-    marketing_budget: Optional[str] = ""
-    focus_track_name: Optional[str] = ""
-    date_flexibility: str
-    has_special_guests: Literal["yes", "no"]
-    promotion_participants: str
-    lyrics: Optional[str] = ""
-    general_notes: Optional[str] = ""
-    additional_files: List[UploadedFileRef] = Field(default_factory=list)
-
-
-class SubmitMetaPayload(BaseModel):
-    form_version: int
-    source: Literal["sunbeat_release_intake"]
-    submitted_at: Optional[str] = None
-
-
-class DraftMetaPayload(BaseModel):
-    form_version: int
-    source: Literal["sunbeat_release_intake"]
-    updated_at: Optional[str] = None
-
-
-class ReleaseIntakeSubmitPayload(BaseModel):
-    draft_token: Optional[str] = None
-    workspace_slug: Optional[str] = None
-
-    identification: IdentificationPayload
-    project: ProjectPayload
-    tracks: List[TrackPayload] = Field(default_factory=list)
-    marketing: MarketingPayload
-    meta: SubmitMetaPayload
-
-
-class ReleaseIntakeDraftValues(BaseModel):
-    identification: IdentificationPayload | Dict[str, Any]
-    project: ProjectPayload | Dict[str, Any]
-    tracks: List[TrackPayload] | List[Dict[str, Any]] = Field(default_factory=list)
-    marketing: MarketingPayload | Dict[str, Any]
-
-
-class ReleaseIntakeDraftPayload(BaseModel):
-    draft_token: Optional[str] = None
-    workspace_slug: Optional[str] = None
-    current_step: Literal[
-        "intro",
-        "identification",
-        "release",
-        "tracks",
-        "marketing",
-        "review_submit",
-    ]
-    progress_percent: int = 0
-    values: Dict[str, Any]
-    meta: DraftMetaPayload
-
-
-def _validate_business_rules(payload: ReleaseIntakeSubmitPayload) -> None:
-    release_type = payload.identification.release_type
-    tracks_count = len(payload.tracks)
-
-    if release_type == "single" and tracks_count != 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Single must contain exactly 1 track."
-        )
-
-    if release_type in {"ep", "album"} and tracks_count < 2:
-        raise HTTPException(
-            status_code=400,
-            detail="EP/Album must contain at least 2 tracks."
-        )
-
-    focus_tracks = [t for t in payload.tracks if t.is_focus_track]
-    if tracks_count > 0 and len(focus_tracks) > 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Only one focus track is allowed."
-        )
-
-    for idx, track in enumerate(payload.tracks, start=1):
-        if not _str(track.title):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Track {idx}: title is required."
-            )
-        if not _str(track.primary_artists):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Track {idx}: primary_artists is required."
-            )
-        if not _str(track.interpreters):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Track {idx}: interpreters is required."
-            )
-        if not _str(track.authors):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Track {idx}: authors is required."
-            )
-        if not _str(track.artist_profiles_status):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Track {idx}: artist_profiles_status is required."
-            )
-        if not _str(track.has_isrc):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Track {idx}: has_isrc is required."
-            )
-        if track.has_isrc == "yes" and not _str(track.isrc_code):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Track {idx}: isrc_code is required when has_isrc=yes."
-            )
-        if not _str(track.explicit_content):
-            raise HTTPException(
-                status_code=400,
-                detail=f"Track {idx}: explicit_content is required."
-            )
-
-
-@router.post("/drafts/save")
-async def save_draft(
-    payload: ReleaseIntakeDraftPayload,
-    x_tenant_value: Optional[str] = Header(None),
-    x_tenant_type: Optional[str] = Header(None),
-    x_user_id: Optional[str] = Header(None),
-    x_user_email: Optional[str] = Header(None),
-    authorization: Optional[str] = Header(None),
-):
-    client_slug = _str(x_tenant_value) or _str(payload.workspace_slug)
-    if not client_slug:
-        raise HTTPException(status_code=400, detail="Missing client_slug (tenant)")
-
-    draft_token = _str(payload.draft_token) or str(uuid4())
-    now_iso = _utc_iso()
-
-    identification = payload.values.get("identification", {}) if payload.values else {}
-    submitter_email = _str(identification.get("submitter_email")) or _str(x_user_email) or None
-    submitter_name = _str(identification.get("submitter_name")) or None
-
-    row: Dict[str, Any] = {
-        "draft_token": draft_token,
-        "client_slug": client_slug,
-        "user_id": _str(x_user_id) or None,
-        "user_email": _str(x_user_email) or submitter_email,
-        "submitter_email": submitter_email,
-        "submitter_name": submitter_name,
-        "current_step": payload.current_step,
-        "progress_percent": payload.progress_percent,
-        "values": payload.values,
-        "meta": payload.meta.model_dump(mode="python"),
-        "status": "draft",
-        "updated_at": now_iso,
-        "created_at": now_iso,
-    }
+def _mark_draft_as_submitted(draft_token: str | None) -> None:
+    if not draft_token:
+        return
 
     try:
-        existing = (
-            supabase.table("release_intake_drafts")
-            .select("draft_token,created_at")
-            .eq("draft_token", draft_token)
-            .limit(1)
-            .execute()
-        )
-        if existing.data:
-            row["created_at"] = existing.data[0].get("created_at") or now_iso
-
-        draft_res = (
-            supabase.table("release_intake_drafts")
-            .upsert(row, on_conflict="draft_token")
-            .execute()
-        )
+        supabase.table("release_intake_drafts").update(
+            {
+                "status": "submitted",
+                "updated_at": _utc_now_iso(),
+            }
+        ).eq("draft_token", draft_token).execute()
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to save draft: {exc}")
-
-    if not draft_res.data:
-        raise HTTPException(status_code=500, detail="Failed to save draft")
-
-    created = draft_res.data[0]
-
-    return {
-        "ok": True,
-        "draft_token": created.get("draft_token"),
-        "current_step": created.get("current_step"),
-        "progress_percent": created.get("progress_percent"),
-        "message": "Draft saved successfully.",
-    }
+        logger.warning("Could not mark release_intake_drafts as submitted: %s", exc)
 
 
-@router.get("/drafts/{draft_token}")
-async def get_draft(
-    draft_token: str,
-    x_tenant_value: Optional[str] = Header(None),
-    x_tenant_type: Optional[str] = Header(None),
-    x_user_id: Optional[str] = Header(None),
-    x_user_email: Optional[str] = Header(None),
-    authorization: Optional[str] = Header(None),
-):
-    try:
-        draft_res = (
-            supabase.table("release_intake_drafts")
-            .select("*")
-            .eq("draft_token", draft_token)
-            .limit(1)
-            .execute()
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Failed to load draft: {exc}")
-
-    if not draft_res.data:
-        raise HTTPException(status_code=404, detail="Draft not found")
-
-    draft = draft_res.data[0]
-
-    tenant_from_header = _str(x_tenant_value)
-    tenant_from_row = _str(draft.get("client_slug"))
-    if tenant_from_header and tenant_from_row and tenant_from_header != tenant_from_row:
-        raise HTTPException(status_code=403, detail="Draft does not belong to this tenant")
-
-    return {
-        "ok": True,
-        "draft_token": draft.get("draft_token"),
-        "workspace_slug": draft.get("client_slug"),
-        "current_step": draft.get("current_step"),
-        "progress_percent": draft.get("progress_percent"),
-        "values": draft.get("values") or {},
-        "meta": draft.get("meta") or {},
-        "status": draft.get("status"),
-    }
+def _update_submission_airtable_success(submission_id: str, airtable_project_id: str) -> None:
+    supabase.table("submissions").update(
+        {
+            "airtable_project_id": airtable_project_id,
+            "airtable_sync_status": "synced",
+            "airtable_synced_at": _utc_now_iso(),
+            "airtable_sync_error": None,
+            "updated_at": _utc_now_iso(),
+        }
+    ).eq("id", submission_id).execute()
 
 
-@router.post("")
-async def create_submission(
-    payload: ReleaseIntakeSubmitPayload,
-    x_tenant_value: Optional[str] = Header(None),
-    x_tenant_type: Optional[str] = Header(None),
-    x_user_id: Optional[str] = Header(None),
-    x_user_email: Optional[str] = Header(None),
-    authorization: Optional[str] = Header(None),
-):
-    client_slug = _str(x_tenant_value) or _str(payload.workspace_slug)
-    if not client_slug:
-        raise HTTPException(status_code=400, detail="Missing client_slug (tenant)")
+def _update_submission_airtable_failed(submission_id: str, error_message: str) -> None:
+    supabase.table("submissions").update(
+        {
+            "airtable_sync_status": "failed",
+            "airtable_sync_error": error_message[:1000],
+            "updated_at": _utc_now_iso(),
+        }
+    ).eq("id", submission_id).execute()
 
-    _validate_business_rules(payload)
 
-    now_iso = _utc_iso()
-    submission_id = str(uuid4())
-    edit_token = str(uuid4())
+def _update_submission_email_sent(submission_id: str) -> None:
+    supabase.table("submissions").update(
+        {
+            "email_status": "sent",
+            "email_sent_at": _utc_now_iso(),
+            "email_error": None,
+            "updated_at": _utc_now_iso(),
+        }
+    ).eq("id", submission_id).execute()
 
+
+def _update_submission_email_failed(submission_id: str, error_message: str) -> None:
+    supabase.table("submissions").update(
+        {
+            "email_status": "failed",
+            "email_error": error_message[:1000],
+            "updated_at": _utc_now_iso(),
+        }
+    ).eq("id", submission_id).execute()
+
+
+def _persist_airtable_track_ids(
+    *,
+    created_tracks: List[Dict[str, Any]],
+    airtable_tracks: List[Dict[str, Any]],
+) -> None:
+    if not created_tracks or not airtable_tracks:
+        return
+
+    by_order_number: Dict[Any, str] = {}
+    for item in airtable_tracks:
+        fields = item.get("fields", {})
+        order_number = fields.get("Ordem da Faixa")
+        if order_number is None:
+            order_number = fields.get("Track Order")
+        if order_number is not None:
+            by_order_number[order_number] = item["id"]
+
+    for track in created_tracks:
+        order_number = track.get("order_number")
+        airtable_track_id = by_order_number.get(order_number)
+        if not airtable_track_id:
+            continue
+
+        supabase.table("tracks").update(
+            {
+                "airtable_track_id": airtable_track_id,
+            }
+        ).eq("id", track["id"]).execute()
+
+
+def _build_submission_row(
+    *,
+    payload: SubmissionPayload,
+    submission_id: str,
+    edit_token: str,
+    now_iso: str,
+) -> Dict[str, Any]:
     identification = payload.identification
     project = payload.project
     marketing = payload.marketing
 
-    focus_track = next((t for t in payload.tracks if t.is_focus_track), None)
-    focus_track_title = (
-        _str(marketing.focus_track_name)
-        or (_str(focus_track.title) if focus_track else "")
-    )
+    focus_track_name = None
+    if marketing and getattr(marketing, "focus_track_name", None):
+        focus_track_name = marketing.focus_track_name
+    elif payload.tracks:
+        focus = next((t for t in payload.tracks if getattr(t, "is_focus_track", False)), None)
+        if focus:
+            focus_track_name = focus.title
 
-    submission_row: Dict[str, Any] = {
+    return {
         "id": submission_id,
-        "draft_token": payload.draft_token,
+        "draft_token": _as_uuid(payload.draft_token),
         "status": "submitted",
         "created_at": now_iso,
         "updated_at": now_iso,
-        "submitted_at": payload.meta.submitted_at or now_iso,
+        "submitted_at": now_iso,
         "version": 1,
         "is_update": False,
         "edit_token": edit_token,
-
-        "client_slug": client_slug,
-        "user_id": _str(x_user_id) or None,
-        "user_email": _str(x_user_email) or identification.submitter_email,
-
-        "artist_name": identification.project_title,
+        "client_slug": payload.workspace_slug,
         "email": identification.submitter_email,
+        "artist_name": identification.submitter_name,
         "release_type": identification.release_type,
         "release_title": identification.project_title,
         "main_title": identification.project_title,
+        "track_title": focus_track_name,
         "genre": project.genre,
-
-        "cover_url": project.cover_file.public_url if project.cover_file else None,
-        "cover_path": project.cover_file.storage_path if project.cover_file else None,
-
-        "track_json": {
-            "count": len(payload.tracks),
-            "focus_track": focus_track_title,
-            "tracks": [t.model_dump(mode="python") for t in payload.tracks],
-        },
-        "marketing_json": {
-            "marketing_numbers": marketing.marketing_numbers,
-            "marketing_focus": marketing.marketing_focus,
-            "marketing_objectives": marketing.marketing_objectives,
-            "marketing_budget": marketing.marketing_budget,
-            "date_flexibility": marketing.date_flexibility,
-            "has_special_guests": marketing.has_special_guests,
-            "promotion_participants": marketing.promotion_participants,
-            "lyrics": marketing.lyrics,
-            "general_notes": marketing.general_notes,
-            "additional_files": [f.model_dump(mode="python") for f in marketing.additional_files],
-            "presskit_link": project.presskit_link,
-            "tiktok_snippet": project.tiktok_snippet,
-            "has_video_asset": project.has_video_asset,
-        },
-
-        "payload": payload.model_dump(mode="python"),
+        "release_date": project.release_date,
+        "cover_url": getattr(getattr(project, "cover_file", None), "public_url", None)
+        or getattr(project, "cover_link", None),
+        "cover_path": getattr(getattr(project, "cover_file", None), "storage_path", None),
+        "marketing_json": _safe_model_dump(marketing),
+        "tracks_json": [_safe_model_dump(track) for track in payload.tracks],
+        "payload": payload.model_dump() if hasattr(payload, "model_dump") else {},
+        "airtable_sync_status": "pending",
+        "email_status": "pending",
     }
+
+
+def _build_track_rows(
+    *,
+    payload: SubmissionPayload,
+    submission_id: str,
+    now_iso: str,
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+
+    for track in payload.tracks:
+        rows.append(
+            {
+                "submission_id": submission_id,
+                "draft_token": _as_uuid(payload.draft_token),
+                "order_number": track.order_number,
+                "title": track.title,
+                "artists": track.primary_artists,
+                "authors": track.authors,
+                "lyrics": track.lyrics,
+                "explicit": _bool_from_yes_no(track.explicit_content),
+                "created_at": now_iso,
+            }
+        )
+
+    return rows
+
+
+def _build_airtable_track_rows(payload: SubmissionPayload) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+
+    for track in payload.tracks:
+        audio_public_url = None
+        audio_path = None
+
+        if getattr(track, "audio_file", None):
+            audio_file = track.audio_file
+            audio_public_url = getattr(audio_file, "public_url", None)
+            audio_path = getattr(audio_file, "storage_path", None)
+
+        rows.append(
+            {
+                "order_number": track.order_number,
+                "title": track.title,
+                "artists": track.primary_artists,
+                "feats": track.featured_artists,
+                "interpreters": getattr(track, "interpreters", None),
+                "authors": track.authors,
+                "publishers": getattr(track, "publishers", None),
+                "producers_musicians": getattr(track, "producers_musicians", None),
+                "phonographic_producer": getattr(track, "phonographic_producer", None),
+                "artist_profiles_status": getattr(track, "artist_profiles_status", None),
+                "artist_profile_names_to_create": getattr(
+                    track, "artist_profile_names_to_create", None
+                ),
+                "existing_profile_links": getattr(track, "existing_profile_links", None),
+                "explicit_content": _yes_no_or_none(track.explicit_content),
+                "has_isrc": _yes_no_or_none(getattr(track, "has_isrc", None)),
+                "isrc": track.isrc_code if getattr(track, "has_isrc", None) == "yes" else None,
+                "tiktok_snippet": getattr(track, "tiktok_snippet", None),
+                "audio_public_url": audio_public_url,
+                "audio_path": audio_path,
+                "lyrics": track.lyrics,
+                "track_status": getattr(track, "track_status", None),
+                "is_focus_track": getattr(track, "is_focus_track", False),
+            }
+        )
+
+    return rows
+
+
+def _sync_airtable(
+    *,
+    payload: SubmissionPayload,
+    submission_id: str,
+    edit_token: str,
+) -> Dict[str, Any]:
+    identification = _safe_model_dump(payload.identification)
+    project = _safe_model_dump(payload.project)
+    marketing = _safe_model_dump(payload.marketing)
+    airtable_tracks_input = _build_airtable_track_rows(payload)
+
+    edit_url = _build_edit_url(edit_token, payload.workspace_slug)
+
+    airtable_project = create_airtable_project(
+        workspace_slug=payload.workspace_slug,
+        identification=identification,
+        project=project,
+        marketing=marketing,
+        submission_id=submission_id,
+        draft_token=_as_uuid(payload.draft_token),
+        edit_url=edit_url,
+    )
+
+    airtable_project_id = airtable_project["id"]
+
+    airtable_tracks = create_airtable_tracks(
+        airtable_project_id=airtable_project_id,
+        workspace_slug=payload.workspace_slug,
+        submission_id=submission_id,
+        tracks=airtable_tracks_input,
+    )
+
+    focus_track_record_id: Optional[str] = None
+    for input_track, airtable_track in zip(airtable_tracks_input, airtable_tracks):
+        if input_track.get("is_focus_track"):
+            focus_track_record_id = airtable_track["id"]
+            break
+
+    if not focus_track_record_id and airtable_tracks:
+        focus_track_record_id = airtable_tracks[0]["id"]
+
+    if focus_track_record_id:
+        try:
+            update_airtable_project_focus_track(
+                airtable_project_id=airtable_project_id,
+                airtable_focus_track_id=focus_track_record_id,
+            )
+        except Exception:
+            logger.exception("Focus track sync failed")
+
+    return {
+        "airtable_project": airtable_project,
+        "airtable_tracks": airtable_tracks,
+        "focus_track_record_id": focus_track_record_id,
+    }
+
+
+@router.get("/edit/{edit_token}")
+async def load_edit_submission(edit_token: str):
+    result = (
+        supabase
+        .table("submissions")
+        .select("*")
+        .eq("edit_token", edit_token)
+        .execute()
+    )
+
+    if not result.data:
+        raise HTTPException(status_code=404, detail="Submission not found")
+
+    return {
+        "ok": True,
+        "data": result.data[0],
+    }
+
+
+@router.post("")
+def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
+    logger.info("Creating submission")
+
+    now_iso = _utc_now_iso()
+    submission_id = str(uuid4())
+    edit_token = _generate_edit_token()
+
+    submission_row = _build_submission_row(
+        payload=payload,
+        submission_id=submission_id,
+        edit_token=edit_token,
+        now_iso=now_iso,
+    )
 
     try:
         submission_res = supabase.table("submissions").insert(submission_row).execute()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to create submission: {exc}")
 
-    if not submission_res.data:
+    if not getattr(submission_res, "data", None):
         raise HTTPException(status_code=500, detail="Failed to create submission")
 
-    created_submission = submission_res.data[0]
-
-    track_rows: List[Dict[str, Any]] = []
-    for track in payload.tracks:
-        track_rows.append(
-            {
-                "draft_token": payload.draft_token,
-                "submission_id": submission_id,
-                "order_number": track.order_number,
-                "title": track.title,
-                "isrc": track.isrc_code or None,
-                "artists": track.primary_artists,
-                "feats": track.featured_artists or None,
-                "author": track.authors,
-                "lyrics": track.lyrics or None,
-                "explicit": _bool_from_yes_no(track.explicit_content),
-                "audio_path": track.audio_file.storage_path if track.audio_file else None,
-                "created_at": now_iso,
-            }
-        )
+    track_rows = _build_track_rows(
+        payload=payload,
+        submission_id=submission_id,
+        now_iso=now_iso,
+    )
 
     created_tracks: List[Dict[str, Any]] = []
+
     if track_rows:
         try:
             tracks_res = supabase.table("tracks").insert(track_rows).execute()
-            created_tracks = tracks_res.data or []
+            created_tracks = getattr(tracks_res, "data", None) or []
         except Exception as exc:
             raise HTTPException(
                 status_code=500,
-                detail=f"Submission created but failed to create tracks: {exc}"
+                detail=f"Submission created but failed to create tracks: {exc}",
             )
 
-    if payload.draft_token:
-        try:
-            (
-                supabase.table("release_intake_drafts")
-                .update(
-                    {
-                        "status": "submitted",
-                        "updated_at": now_iso,
-                    }
-                )
-                .eq("draft_token", payload.draft_token)
-                .execute()
-            )
-        except Exception:
-            pass
+    _mark_draft_as_submitted(_as_uuid(payload.draft_token))
 
-    return {
+    airtable_result: Optional[Dict[str, Any]] = None
+    airtable_error: Optional[str] = None
+
+    try:
+        airtable_result = _sync_airtable(
+            payload=payload,
+            submission_id=submission_id,
+            edit_token=edit_token,
+        )
+
+        airtable_project_id = airtable_result["airtable_project"]["id"]
+        _update_submission_airtable_success(submission_id, airtable_project_id)
+
+        _persist_airtable_track_ids(
+            created_tracks=created_tracks,
+            airtable_tracks=airtable_result["airtable_tracks"],
+        )
+
+    except Exception as exc:
+        airtable_error = str(exc)
+        _update_submission_airtable_failed(submission_id, airtable_error)
+        logger.exception("Airtable sync failed")
+
+    email_error: Optional[str] = None
+    email_sent = False
+
+    try:
+        identification = payload.identification
+        send_edit_link_email(
+            to_email=identification.submitter_email,
+            edit_token=edit_token,
+            project_title=identification.project_title,
+            recipient_name=identification.submitter_name,
+            workspace_slug=payload.workspace_slug,
+        )
+        _update_submission_email_sent(submission_id)
+        email_sent = True
+    except Exception as exc:
+        email_error = str(exc)
+        _update_submission_email_failed(submission_id, email_error)
+        logger.exception("Edit link email failed")
+
+    response: Dict[str, Any] = {
         "ok": True,
-        "submission_id": created_submission.get("id"),
-        "client_slug": client_slug,
-        "draft_token": payload.draft_token,
+        "submission_id": submission_id,
+        "draft_token": _as_uuid(payload.draft_token),
         "edit_token": edit_token,
         "tracks_created": len(created_tracks),
         "message": "Submission created successfully.",
+        "sync": {
+            "supabase": "ok",
+            "airtable": "ok" if not airtable_error else "failed",
+            "email": "ok" if email_sent else "failed",
+        },
     }
+
+    if airtable_result:
+        response["airtable_project_id"] = airtable_result["airtable_project"]["id"]
+        response["airtable_tracks_created"] = len(airtable_result["airtable_tracks"])
+        response["airtable_focus_track_id"] = airtable_result.get("focus_track_record_id")
+
+    if airtable_error:
+        response["airtable_error"] = airtable_error
+
+    if email_error:
+        response["email_error"] = email_error
+
+    return response
