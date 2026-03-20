@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import secrets
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -16,11 +17,14 @@ from app.services.airtable import (
     create_airtable_tracks,
     update_airtable_project_focus_track,
 )
-from app.services.email import send_edit_link_email
+from app.services.email import send_edit_link_email, send_submission_summary_email
 
 logger = logging.getLogger("sunbeat.submissions")
 
 router = APIRouter(prefix="/submissions", tags=["Submissions"])
+
+EMAIL_SETTINGS_STEP_KEY = "__workspace_settings__"
+EMAIL_SETTINGS_FIELD_KEY = "submission_notification_emails"
 
 
 def _utc_now_iso() -> str:
@@ -47,6 +51,23 @@ def _safe_model_dump(obj: Any) -> Dict[str, Any]:
     if isinstance(obj, dict):
         return obj
     return dict(obj)
+
+
+def _get_focus_track_name(payload: SubmissionPayload) -> Optional[str]:
+    marketing = payload.marketing
+
+    if marketing and getattr(marketing, "focus_track_name", None):
+        return marketing.focus_track_name
+
+    if payload.tracks:
+        focus = next(
+            (track for track in payload.tracks if getattr(track, "is_focus_track", False)),
+            None,
+        )
+        if focus:
+            return focus.title
+
+    return None
 
 
 def _bool_from_yes_no(value: Any) -> bool:
@@ -171,13 +192,7 @@ def _build_submission_row(
     project = payload.project
     marketing = payload.marketing
 
-    focus_track_name = None
-    if marketing and getattr(marketing, "focus_track_name", None):
-        focus_track_name = marketing.focus_track_name
-    elif payload.tracks:
-        focus = next((t for t in payload.tracks if getattr(t, "is_focus_track", False)), None)
-        if focus:
-            focus_track_name = focus.title
+    focus_track_name = _get_focus_track_name(payload)
 
     return {
         "id": submission_id,
@@ -206,6 +221,79 @@ def _build_submission_row(
         "payload": payload.model_dump() if hasattr(payload, "model_dump") else {},
         "airtable_sync_status": "pending",
         "email_status": "pending",
+    }
+
+
+def _normalize_notification_emails(value: Any) -> List[str]:
+    if not isinstance(value, list):
+        return []
+
+    unique: list[str] = []
+    seen: set[str] = set()
+
+    for item in value:
+        normalized = str(item).strip().lower()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        unique.append(normalized)
+
+    return unique[:5]
+
+
+def _default_notification_emails(workspace_slug: str) -> List[str]:
+    if workspace_slug == "atabaque":
+        return ["labels@atabaque.biz"]
+
+    return []
+
+
+def _load_workspace_email_settings(workspace_slug: str) -> Dict[str, Any]:
+    workspace_name = workspace_slug
+    submission_email_enabled = True
+    notification_emails = _default_notification_emails(workspace_slug)
+
+    try:
+        branding_result = (
+            supabase
+            .table("workspace_branding")
+            .select("workspace_name, submission_email_enabled")
+            .eq("workspace_slug", workspace_slug)
+            .limit(1)
+            .execute()
+        )
+
+        branding_row = (getattr(branding_result, "data", None) or [None])[0]
+        if branding_row:
+            workspace_name = branding_row.get("workspace_name") or workspace_name
+            if isinstance(branding_row.get("submission_email_enabled"), bool):
+                submission_email_enabled = branding_row["submission_email_enabled"]
+
+        settings_result = (
+            supabase
+            .table("workspace_field_overrides")
+            .select("helper_text_override")
+            .eq("workspace_slug", workspace_slug)
+            .eq("step_key", EMAIL_SETTINGS_STEP_KEY)
+            .eq("field_key", EMAIL_SETTINGS_FIELD_KEY)
+            .limit(1)
+            .execute()
+        )
+
+        settings_row = (getattr(settings_result, "data", None) or [None])[0]
+        if settings_row and settings_row.get("helper_text_override"):
+            parsed_emails = _normalize_notification_emails(
+                json.loads(settings_row["helper_text_override"])
+            )
+            if parsed_emails:
+                notification_emails = parsed_emails
+    except Exception:
+        logger.exception("Could not load workspace notification settings")
+
+    return {
+        "workspace_name": workspace_name,
+        "submission_email_enabled": submission_email_enabled,
+        "notification_emails": notification_emails,
     }
 
 
@@ -422,6 +510,9 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
 
     email_error: Optional[str] = None
     email_sent = False
+    notification_email_error: Optional[str] = None
+    notification_email_status = "skipped"
+    notification_email_recipients = 0
 
     try:
         identification = payload.identification
@@ -439,6 +530,41 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
         _update_submission_email_failed(submission_id, email_error)
         logger.exception("Edit link email failed")
 
+    try:
+        workspace_email_settings = _load_workspace_email_settings(payload.workspace_slug)
+        notification_emails = workspace_email_settings["notification_emails"]
+        notification_email_recipients = len(notification_emails)
+
+        if (
+            workspace_email_settings["submission_email_enabled"]
+            and notification_emails
+        ):
+            identification = payload.identification
+            project = payload.project
+
+            send_submission_summary_email(
+                to_emails=notification_emails,
+                workspace_name=workspace_email_settings["workspace_name"],
+                submitter_name=identification.submitter_name,
+                submitter_email=identification.submitter_email,
+                project_title=identification.project_title,
+                release_type=identification.release_type,
+                release_date=str(project.release_date) if project.release_date else None,
+                genre=project.genre,
+                focus_track_name=_get_focus_track_name(payload),
+                track_titles=[track.title for track in payload.tracks],
+                edit_url=_build_edit_url(edit_token, payload.workspace_slug),
+            )
+            notification_email_status = "ok"
+        elif workspace_email_settings["submission_email_enabled"]:
+            notification_email_status = "skipped"
+        else:
+            notification_email_status = "disabled"
+    except Exception as exc:
+        notification_email_error = str(exc)
+        notification_email_status = "failed"
+        logger.exception("Submission summary email failed")
+
     response: Dict[str, Any] = {
         "ok": True,
         "submission_id": submission_id,
@@ -450,6 +576,7 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
             "supabase": "ok",
             "airtable": "ok" if not airtable_error else "failed",
             "email": "ok" if email_sent else "failed",
+            "notification_email": notification_email_status,
         },
     }
 
@@ -463,5 +590,10 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
 
     if email_error:
         response["email_error"] = email_error
+
+    response["notification_email_recipients"] = notification_email_recipients
+
+    if notification_email_error:
+        response["notification_email_error"] = notification_email_error
 
     return response
