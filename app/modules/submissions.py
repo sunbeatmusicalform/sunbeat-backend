@@ -366,6 +366,16 @@ def _build_airtable_track_rows(payload: SubmissionPayload) -> List[Dict[str, Any
     return rows
 
 
+
+
+def _sync_google_drive(payload: SubmissionPayload) -> Dict[str, Any]:
+    if not settings.GOOGLE_DRIVE_ENABLED:
+        return {"ok": True, "status": "skipped", "reason": "disabled"}
+
+    from app.services.google_drive import sync_submission_to_google_drive
+
+    return sync_submission_to_google_drive(payload)
+
 def _sync_airtable(
     *,
     payload: SubmissionPayload,
@@ -508,6 +518,15 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
         _update_submission_airtable_failed(submission_id, airtable_error)
         logger.exception("Airtable sync failed")
 
+    drive_result: Optional[Dict[str, Any]] = None
+    drive_error: Optional[str] = None
+
+    try:
+        drive_result = _sync_google_drive(payload)
+    except Exception as exc:
+        drive_error = str(exc)
+        logger.exception("Google Drive sync failed")
+
     email_error: Optional[str] = None
     email_sent = False
     notification_email_error: Optional[str] = None
@@ -575,6 +594,7 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
         "sync": {
             "supabase": "ok",
             "airtable": "ok" if not airtable_error else "failed",
+            "drive": (drive_result or {}).get("status", "failed") if not drive_error else "failed",
             "email": "ok" if email_sent else "failed",
             "notification_email": notification_email_status,
         },
@@ -587,6 +607,12 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
 
     if airtable_error:
         response["airtable_error"] = airtable_error
+
+    if drive_result:
+        response["drive"] = drive_result
+
+    if drive_error:
+        response["drive_error"] = drive_error
 
     if email_error:
         response["email_error"] = email_error
