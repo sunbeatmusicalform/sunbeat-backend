@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import logging
 import json
 import secrets
@@ -11,7 +12,18 @@ from fastapi import APIRouter, HTTPException
 
 from app.core.config import settings
 from app.core.database import supabase
-from app.schemas.submission import SubmissionPayload
+from app.modules.workflow_registry import (
+    DEFAULT_WORKFLOW_TYPE,
+    RIGHTS_CLEARANCE_WORKFLOW_TYPE,
+    build_frontend_workflow_path,
+    resolve_workflow_identity,
+)
+from app.schemas.submission import (
+    ReleaseIntakeSubmissionPayload,
+    RightsClearanceSubmissionPayload,
+    WorkflowSubmissionPayload,
+    validate_submission_payload,
+)
 from app.services.airtable import (
     create_airtable_project,
     create_airtable_tracks,
@@ -25,8 +37,6 @@ router = APIRouter(prefix="/submissions", tags=["Submissions"])
 
 EMAIL_SETTINGS_STEP_KEY = "__workspace_settings__"
 EMAIL_SETTINGS_FIELD_KEY = "submission_notification_emails"
-DEFAULT_WORKFLOW_TYPE = "release_intake"
-DEFAULT_FORM_VERSION = "legacy_v1"
 
 
 def _utc_now_iso() -> str:
@@ -55,20 +65,43 @@ def _safe_model_dump(obj: Any) -> Dict[str, Any]:
     return dict(obj)
 
 
-def _submission_workflow_type(payload: SubmissionPayload) -> str:
-    workflow_type = getattr(payload, "workflow_type", None)
-    text = str(workflow_type or "").strip()
-    return text or DEFAULT_WORKFLOW_TYPE
+def _is_rights_clearance_payload(payload: WorkflowSubmissionPayload) -> bool:
+    return isinstance(payload, RightsClearanceSubmissionPayload)
 
 
-def _submission_form_version(payload: SubmissionPayload) -> str:
-    meta = getattr(payload, "meta", None)
-    form_version = getattr(meta, "form_version", None)
-    text = str(form_version or "").strip()
-    return text or DEFAULT_FORM_VERSION
+def _is_release_intake_payload(payload: WorkflowSubmissionPayload) -> bool:
+    return isinstance(payload, ReleaseIntakeSubmissionPayload)
 
 
-def _get_focus_track_name(payload: SubmissionPayload) -> Optional[str]:
+def _submission_workflow_type(payload: WorkflowSubmissionPayload) -> str:
+    return resolve_workflow_identity(
+        workspace_slug=payload.workspace_slug,
+        workflow_type=getattr(payload, "workflow_type", None),
+        form_version=getattr(getattr(payload, "meta", None), "form_version", None),
+    )["workflow_type"]
+
+
+def _submission_form_version(payload: WorkflowSubmissionPayload) -> str:
+    return resolve_workflow_identity(
+        workspace_slug=payload.workspace_slug,
+        workflow_type=getattr(payload, "workflow_type", None),
+        form_version=getattr(getattr(payload, "meta", None), "form_version", None),
+    )["form_version"]
+
+
+def _get_focus_track_name(payload: WorkflowSubmissionPayload) -> Optional[str]:
+    if _is_rights_clearance_payload(payload):
+        if getattr(payload.request_type, "clearance_format", "") == "music_release_clearance_intake":
+            first_track = (payload.tracks or [None])[0]
+            if first_track and getattr(first_track, "title", None):
+                return str(first_track.title).strip() or None
+
+        clearance_scope = getattr(payload, "clearance_scope", None)
+        if clearance_scope and getattr(clearance_scope, "music_title", None):
+            return str(clearance_scope.music_title).strip() or None
+
+        return None
+
     focus_track = _get_focus_track(payload)
     if focus_track and getattr(focus_track, "title", None):
         return focus_track.title
@@ -81,7 +114,10 @@ def _get_focus_track_name(payload: SubmissionPayload) -> Optional[str]:
     return None
 
 
-def _get_focus_track(payload: SubmissionPayload) -> Any | None:
+def _get_focus_track(payload: WorkflowSubmissionPayload) -> Any | None:
+    if _is_rights_clearance_payload(payload):
+        return None
+
     marketing = payload.marketing
     focus_track_name = str(
         getattr(marketing, "focus_track_name", "") or ""
@@ -109,7 +145,31 @@ def _get_focus_track(payload: SubmissionPayload) -> Any | None:
     return payload.tracks[0] if payload.tracks else None
 
 
-def _get_primary_artist(payload: SubmissionPayload) -> Optional[str]:
+def _get_primary_artist(payload: WorkflowSubmissionPayload) -> Optional[str]:
+    if _is_rights_clearance_payload(payload):
+        if getattr(payload.request_type, "clearance_format", "") == "music_release_clearance_intake":
+            first_track = (payload.tracks or [None])[0]
+            if first_track and getattr(first_track, "primary_artists", None):
+                primary_artists = str(first_track.primary_artists).strip()
+                if primary_artists:
+                    return primary_artists
+
+        clearance_scope = getattr(payload, "clearance_scope", None)
+        artist_name = str(getattr(clearance_scope, "artist_name", "") or "").strip()
+        if artist_name:
+            return artist_name
+
+        responsible_company = str(
+            getattr(payload.project_context, "responsible_company", "") or ""
+        ).strip()
+        if responsible_company:
+            return responsible_company
+
+        requester_company = str(
+            getattr(payload.requester_identification, "requester_company", "") or ""
+        ).strip()
+        return requester_company or None
+
     focus_track = _get_focus_track(payload)
     if focus_track:
         primary_artist = str(getattr(focus_track, "primary_artists", "") or "").strip()
@@ -170,6 +230,30 @@ def _calculate_days_until_release(release_date: Any) -> Optional[int]:
     return (parsed_release_date - today).days
 
 
+def _get_submission_contact_email(payload: WorkflowSubmissionPayload) -> str:
+    if _is_rights_clearance_payload(payload):
+        return payload.requester_identification.requester_email
+    return payload.identification.submitter_email
+
+
+def _get_submission_contact_name(payload: WorkflowSubmissionPayload) -> str:
+    if _is_rights_clearance_payload(payload):
+        return payload.requester_identification.requester_name
+    return payload.identification.submitter_name
+
+
+def _get_submission_project_title(payload: WorkflowSubmissionPayload) -> str:
+    if _is_rights_clearance_payload(payload):
+        return payload.project_context.project_title
+    return payload.identification.project_title
+
+
+def _get_submission_release_date(payload: WorkflowSubmissionPayload) -> Optional[str]:
+    if _is_rights_clearance_payload(payload):
+        return _normalize_release_date(payload.project_context.release_or_start_date)
+    return _normalize_release_date(getattr(payload.project, "release_date", None))
+
+
 def _build_post_submit_email_subject(
     *,
     project_title: Optional[str],
@@ -180,7 +264,7 @@ def _build_post_submit_email_subject(
     safe_release_date = str(release_date or "").strip() or "data nao informada"
     safe_primary_artist = str(primary_artist or "").strip() or "artista nao informado"
     return (
-        f"Resumo do lançamento - {safe_project_title} - "
+        f"Resumo do lancamento - {safe_project_title} - "
         f"{safe_release_date} + {safe_primary_artist}"
     )
 
@@ -198,14 +282,22 @@ def _yes_no_or_none(value: Any) -> Optional[str]:
     text = str(value).strip().lower()
     if text in {"yes", "sim", "true", "1"}:
         return "Sim"
-    if text in {"no", "não", "nao", "false", "0"}:
-        return "Não"
+    if text in {"no", "nao", "false", "0"}:
+        return "Nao"
     return str(value).strip()
 
 
-def _build_edit_url(edit_token: str, workspace_slug: str) -> str:
+def _build_edit_url(
+    edit_token: str,
+    workspace_slug: str,
+    workflow_type: str = DEFAULT_WORKFLOW_TYPE,
+) -> str:
     base = settings.FRONTEND_BASE_URL.rstrip("/")
-    return f"{base}/intake/{workspace_slug}?edit_token={edit_token}"
+    path = build_frontend_workflow_path(
+        workspace_slug=workspace_slug,
+        workflow_type=workflow_type,
+    )
+    return f"{base}{path}?edit_token={edit_token}"
 
 
 def _mark_draft_as_submitted(draft_token: str | None) -> None:
@@ -266,6 +358,16 @@ def _update_submission_email_failed(submission_id: str, error_message: str) -> N
     ).eq("id", submission_id).execute()
 
 
+def _update_submission_email_skipped(submission_id: str, reason: str) -> None:
+    supabase.table("submissions").update(
+        {
+            "email_status": "skipped",
+            "email_error": reason[:1000],
+            "updated_at": _utc_now_iso(),
+        }
+    ).eq("id", submission_id).execute()
+
+
 def _persist_airtable_track_ids(
     *,
     created_tracks: List[Dict[str, Any]],
@@ -298,11 +400,59 @@ def _persist_airtable_track_ids(
 
 def _build_submission_row(
     *,
-    payload: SubmissionPayload,
+    payload: WorkflowSubmissionPayload,
     submission_id: str,
     edit_token: str,
     now_iso: str,
 ) -> Dict[str, Any]:
+    if _is_rights_clearance_payload(payload):
+        requester = payload.requester_identification
+        request_type = payload.request_type
+        project_context = payload.project_context
+        assets_references = payload.assets_references
+        clearance_scope = payload.clearance_scope
+        tracks = payload.tracks or []
+        clearance_format = getattr(request_type, "clearance_format", "")
+        first_track = tracks[0] if tracks else None
+        track_title = (
+            str(getattr(first_track, "title", "") or "").strip()
+            if clearance_format == "music_release_clearance_intake"
+            else str(getattr(clearance_scope, "music_title", "") or "").strip()
+        ) or None
+
+        return {
+            "id": submission_id,
+            "draft_token": _as_uuid(payload.draft_token),
+            "status": "submitted",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "submitted_at": now_iso,
+            "version": 1,
+            "is_update": False,
+            "edit_token": edit_token,
+            "client_slug": payload.workspace_slug,
+            "email": requester.requester_email,
+            "artist_name": requester.requester_name,
+            "release_type": RIGHTS_CLEARANCE_WORKFLOW_TYPE,
+            "release_title": project_context.project_title,
+            "main_title": project_context.project_title,
+            "track_title": track_title,
+            "genre": project_context.client_or_distributor,
+            "release_date": project_context.release_or_start_date,
+            "cover_url": None,
+            "cover_path": None,
+            "marketing_json": {
+                "request_type": _safe_model_dump(request_type),
+                "project_context": _safe_model_dump(project_context),
+                "clearance_scope": _safe_model_dump(clearance_scope),
+                "assets_references": _safe_model_dump(assets_references),
+            },
+            "tracks_json": [_safe_model_dump(track) for track in tracks],
+            "payload": payload.model_dump() if hasattr(payload, "model_dump") else {},
+            "airtable_sync_status": "skipped",
+            "email_status": "pending",
+        }
+
     identification = payload.identification
     project = payload.project
     marketing = payload.marketing
@@ -410,6 +560,168 @@ def _has_meaningful_values(value: Any) -> bool:
     return normalized not in (None, "", [], {})
 
 
+def _infer_rights_clearance_format(
+    clearance_scope: Dict[str, Any],
+    tracks: Optional[List[Dict[str, Any]]] = None,
+    project_context: Optional[Dict[str, Any]] = None,
+) -> str:
+    if tracks:
+        return "music_release_clearance_intake"
+
+    if str((project_context or {}).get("release_type") or "").strip():
+        return "music_release_clearance_intake"
+
+    audiovisual_keys = (
+        "audiovisual_type",
+        "director_name",
+        "product_or_campaign_name",
+        "scene_description",
+        "sync_duration",
+        "media_channels",
+        "duration_sync",
+    )
+    music_keys = (
+        "composer_author_info",
+        "publisher_info",
+        "material_type",
+        "intended_use",
+        "exclusivity",
+    )
+
+    if any(str(clearance_scope.get(key) or "").strip() for key in audiovisual_keys):
+        return "audiovisual_product_sync"
+    if any(str(clearance_scope.get(key) or "").strip() for key in music_keys):
+        return "music_project_track"
+    return ""
+
+
+def _normalize_rights_requester_identification(
+    value: Dict[str, Any],
+    row: Dict[str, Any],
+) -> Dict[str, Any]:
+    return _strip_empty_values(
+        {
+            "requester_name": value.get("requester_name") or row.get("artist_name") or "",
+            "requester_email": value.get("requester_email") or row.get("email") or "",
+            "requester_company": value.get("requester_company")
+            or value.get("responsible_company")
+            or "",
+            "requester_role": value.get("requester_role") or "",
+        }
+    ) or {}
+
+
+def _normalize_rights_project_context(
+    value: Dict[str, Any],
+    row: Dict[str, Any],
+) -> Dict[str, Any]:
+    return _strip_empty_values(
+        {
+            "project_title": value.get("project_title")
+            or row.get("release_title")
+            or row.get("main_title")
+            or "",
+            "responsible_company": value.get("responsible_company") or "",
+            "client_or_distributor": value.get("client_or_distributor")
+            or value.get("distributor")
+            or row.get("genre")
+            or "",
+            "release_or_start_date": value.get("release_or_start_date")
+            or value.get("release_start_date")
+            or row.get("release_date")
+            or "",
+            "release_type": value.get("release_type") or "",
+            "project_synopsis": value.get("project_synopsis") or "",
+            "has_brand_association": value.get("has_brand_association")
+            or value.get("is_associated_with_brand")
+            or "",
+            "brand_context": value.get("brand_context")
+            or value.get("brand_name_or_context")
+            or "",
+            "general_clearance_notes": value.get("general_clearance_notes")
+            or value.get("general_notes")
+            or "",
+        }
+    ) or {}
+
+
+def _normalize_rights_clearance_scope(
+    value: Dict[str, Any],
+    row: Dict[str, Any],
+) -> Dict[str, Any]:
+    return _strip_empty_values(
+        {
+            "music_title": value.get("music_title") or row.get("track_title") or "",
+            "artist_name": value.get("artist_name") or "",
+            "phonogram_owner": value.get("phonogram_owner") or "",
+            "territory": value.get("territory") or "",
+            "licensing_period": value.get("licensing_period") or "",
+            "composer_author_info": value.get("composer_author_info") or "",
+            "publisher_info": value.get("publisher_info") or "",
+            "material_type": value.get("material_type")
+            or value.get("licensed_materials")
+            or "",
+            "intended_use": value.get("intended_use") or "",
+            "exclusivity": value.get("exclusivity") or "",
+            "audiovisual_type": value.get("audiovisual_type") or "",
+            "director_name": value.get("director_name") or "",
+            "product_or_campaign_name": value.get("product_or_campaign_name") or "",
+            "scene_description": value.get("scene_description") or "",
+            "sync_duration": value.get("sync_duration")
+            or value.get("duration_sync")
+            or "",
+            "media_channels": value.get("media_channels") or "",
+        }
+    ) or {}
+
+
+def _normalize_rights_assets_references(value: Dict[str, Any]) -> Dict[str, Any]:
+    return _strip_empty_values(
+        {
+            "supporting_files": value.get("supporting_files")
+            or value.get("additional_files")
+            or [],
+            "reference_links": value.get("reference_links") or "",
+            "additional_notes": value.get("additional_notes")
+            or value.get("supporting_notes")
+            or "",
+        }
+    ) or {}
+
+
+def _normalize_rights_tracks(value: Any) -> List[Dict[str, Any]]:
+    tracks = _coerce_list(value)
+    normalized_tracks: List[Dict[str, Any]] = []
+
+    for index, item in enumerate(tracks, start=1):
+        track = _coerce_dict(item)
+        if not track:
+            continue
+
+        normalized_tracks.append(
+            {
+                "local_id": track.get("local_id") or f"rights-track-{index}",
+                "order_number": track.get("order_number") or index,
+                "title": track.get("title") or "",
+                "primary_artists": track.get("primary_artists")
+                or track.get("artists")
+                or "",
+                "authors": track.get("authors") or "",
+                "publishers": track.get("publishers") or "",
+                "phonogram_owner": track.get("phonogram_owner")
+                or track.get("phonographic_producer")
+                or "",
+                "has_isrc": track.get("has_isrc") or "",
+                "isrc_code": track.get("isrc_code") or track.get("isrc") or "",
+                "notes_for_clearance": track.get("notes_for_clearance")
+                or track.get("lyrics")
+                or "",
+            }
+        )
+
+    return _strip_empty_values(normalized_tracks) or []
+
+
 def _normalize_edit_submission_data(row: Dict[str, Any]) -> Dict[str, Any]:
     raw_payload = row.get("payload")
     raw_marketing_json = row.get("marketing_json")
@@ -417,6 +729,99 @@ def _normalize_edit_submission_data(row: Dict[str, Any]) -> Dict[str, Any]:
 
     payload = _coerce_dict(raw_payload)
     meta = _coerce_dict(payload.get("meta"))
+    workspace_slug = payload.get("workspace_slug") or row.get("client_slug") or "atabaque"
+    workflow_identity = resolve_workflow_identity(
+        workspace_slug=workspace_slug,
+        workflow_type=payload.get("workflow_type"),
+        form_version=meta.get("form_version"),
+    )
+
+    if workflow_identity["workflow_type"] == RIGHTS_CLEARANCE_WORKFLOW_TYPE:
+        marketing_bundle = _coerce_dict(raw_marketing_json)
+        requester_identification = _normalize_rights_requester_identification(
+            _coerce_dict(payload.get("requester_identification")),
+            row,
+        )
+        project_context = _normalize_rights_project_context(
+            _coerce_dict(payload.get("project_context"))
+            or _coerce_dict(marketing_bundle.get("project_context")),
+            row,
+        )
+        tracks = _normalize_rights_tracks(
+            payload.get("tracks") if payload.get("tracks") else raw_tracks_json
+        )
+        clearance_scope = _normalize_rights_clearance_scope(
+            _coerce_dict(payload.get("clearance_scope"))
+            or _coerce_dict(marketing_bundle.get("clearance_scope")),
+            row,
+        )
+        assets_references = _normalize_rights_assets_references(
+            _coerce_dict(payload.get("assets_references"))
+            or _coerce_dict(marketing_bundle.get("assets_references"))
+        )
+        request_type = _strip_empty_values(
+            _coerce_dict(payload.get("request_type"))
+            or _coerce_dict(marketing_bundle.get("request_type"))
+            or {
+                "clearance_format": _infer_rights_clearance_format(
+                    clearance_scope,
+                    tracks,
+                    project_context,
+                ),
+            }
+        ) or {}
+
+        debug = {
+            "has_payload": bool(payload),
+            "has_marketing_json": bool(raw_marketing_json),
+            "has_tracks_json": bool(raw_tracks_json),
+            "payload_is_string": isinstance(raw_payload, str),
+            "marketing_json_is_string": isinstance(raw_marketing_json, str),
+            "tracks_json_is_string": isinstance(raw_tracks_json, str),
+            "payload_type": type(raw_payload).__name__,
+            "marketing_json_type": type(raw_marketing_json).__name__,
+            "tracks_json_type": type(raw_tracks_json).__name__,
+            "clearance_format": request_type.get("clearance_format") or "",
+            "has_requester_identification_data": _has_meaningful_values(
+                requester_identification
+            ),
+            "has_request_type_data": _has_meaningful_values(request_type),
+            "has_project_context_data": _has_meaningful_values(project_context),
+            "has_tracks_data": len(tracks) > 0,
+            "has_clearance_scope_data": _has_meaningful_values(clearance_scope),
+            "has_assets_references_data": _has_meaningful_values(assets_references),
+            "normalized_tracks_count": len(tracks),
+            "normalized_release_date": project_context.get("release_or_start_date") or "",
+            "hydration_ready": bool(
+                _has_meaningful_values(requester_identification)
+                or _has_meaningful_values(request_type)
+                or _has_meaningful_values(project_context)
+                or len(tracks) > 0
+                or _has_meaningful_values(clearance_scope)
+                or _has_meaningful_values(assets_references)
+            ),
+            "shape_source": "payload" if payload else "row_fallback",
+        }
+
+        return {
+            "submission_id": row.get("id"),
+            "draft_token": row.get("draft_token"),
+            "edit_token": row.get("edit_token"),
+            "workspace_slug": workflow_identity["workspace_slug"],
+            "workflow_type": workflow_identity["workflow_type"],
+            "requester_identification": requester_identification,
+            "request_type": request_type,
+            "project_context": project_context,
+            "tracks": tracks,
+            "clearance_scope": clearance_scope,
+            "assets_references": assets_references,
+            "meta": {
+                "form_version": workflow_identity["form_version"],
+                "source": meta.get("source") or workflow_identity["source"],
+                "submitted_at": meta.get("submitted_at") or row.get("submitted_at"),
+            },
+            "debug": debug,
+        }
 
     identification = _coerce_dict(payload.get("identification"))
     if not identification:
@@ -504,15 +909,15 @@ def _normalize_edit_submission_data(row: Dict[str, Any]) -> Dict[str, Any]:
         "submission_id": row.get("id"),
         "draft_token": row.get("draft_token"),
         "edit_token": row.get("edit_token"),
-        "workspace_slug": payload.get("workspace_slug") or row.get("client_slug"),
-        "workflow_type": payload.get("workflow_type") or DEFAULT_WORKFLOW_TYPE,
+        "workspace_slug": workflow_identity["workspace_slug"],
+        "workflow_type": workflow_identity["workflow_type"],
         "identification": identification,
         "project": project,
         "marketing": marketing,
         "tracks": tracks,
         "meta": {
-            "form_version": meta.get("form_version") or DEFAULT_FORM_VERSION,
-            "source": meta.get("source"),
+            "form_version": workflow_identity["form_version"],
+            "source": meta.get("source") or workflow_identity["source"],
             "submitted_at": meta.get("submitted_at") or row.get("submitted_at"),
         },
         "debug": debug,
@@ -594,10 +999,33 @@ def _load_workspace_email_settings(workspace_slug: str) -> Dict[str, Any]:
 
 def _build_track_rows(
     *,
-    payload: SubmissionPayload,
+    payload: WorkflowSubmissionPayload,
     submission_id: str,
     now_iso: str,
 ) -> List[Dict[str, Any]]:
+    if _is_rights_clearance_payload(payload):
+        if getattr(payload.request_type, "clearance_format", "") != "music_release_clearance_intake":
+            return []
+
+        rows: List[Dict[str, Any]] = []
+
+        for index, track in enumerate(payload.tracks or [], start=1):
+            rows.append(
+                {
+                    "submission_id": submission_id,
+                    "draft_token": _as_uuid(payload.draft_token),
+                    "order_number": getattr(track, "order_number", None) or index,
+                    "title": track.title,
+                    "artists": track.primary_artists,
+                    "authors": track.authors,
+                    "lyrics": getattr(track, "notes_for_clearance", None),
+                    "explicit": False,
+                    "created_at": now_iso,
+                }
+            )
+
+        return rows
+
     rows: List[Dict[str, Any]] = []
 
     for track in payload.tracks:
@@ -618,7 +1046,12 @@ def _build_track_rows(
     return rows
 
 
-def _build_airtable_track_rows(payload: SubmissionPayload) -> List[Dict[str, Any]]:
+def _build_airtable_track_rows(
+    payload: WorkflowSubmissionPayload,
+) -> List[Dict[str, Any]]:
+    if _is_rights_clearance_payload(payload):
+        return []
+
     rows: List[Dict[str, Any]] = []
 
     for track in payload.tracks:
@@ -663,10 +1096,15 @@ def _build_airtable_track_rows(payload: SubmissionPayload) -> List[Dict[str, Any
 
 def _sync_airtable(
     *,
-    payload: SubmissionPayload,
+    payload: WorkflowSubmissionPayload,
     submission_id: str,
     edit_token: str,
 ) -> Dict[str, Any]:
+    if _is_rights_clearance_payload(payload):
+        raise RuntimeError(
+            "Airtable sync for rights_clearance is not connected yet."
+        )
+
     identification = _safe_model_dump(payload.identification)
     project = _safe_model_dump(payload.project)
     marketing = _safe_model_dump(payload.marketing)
@@ -747,12 +1185,14 @@ async def load_edit_submission(edit_token: str):
 
 
 @router.post("")
-def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
+def create_submission(payload: Dict[str, Any]) -> Dict[str, Any]:
+    validated_payload = validate_submission_payload(payload)
+
     logger.info(
         "Creating submission workspace_slug=%s workflow_type=%s form_version=%s",
-        payload.workspace_slug,
-        _submission_workflow_type(payload),
-        _submission_form_version(payload),
+        validated_payload.workspace_slug,
+        _submission_workflow_type(validated_payload),
+        _submission_form_version(validated_payload),
     )
 
     now_iso = _utc_now_iso()
@@ -760,7 +1200,7 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
     edit_token = _generate_edit_token()
 
     submission_row = _build_submission_row(
-        payload=payload,
+        payload=validated_payload,
         submission_id=submission_id,
         edit_token=edit_token,
         now_iso=now_iso,
@@ -775,7 +1215,7 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail="Failed to create submission")
 
     track_rows = _build_track_rows(
-        payload=payload,
+        payload=validated_payload,
         submission_id=submission_id,
         now_iso=now_iso,
     )
@@ -792,39 +1232,42 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
                 detail=f"Submission created but failed to create tracks: {exc}",
             )
 
-    _mark_draft_as_submitted(_as_uuid(payload.draft_token))
+    _mark_draft_as_submitted(_as_uuid(validated_payload.draft_token))
 
     airtable_result: Optional[Dict[str, Any]] = None
     airtable_error: Optional[str] = None
 
-    try:
-        airtable_result = _sync_airtable(
-            payload=payload,
-            submission_id=submission_id,
-            edit_token=edit_token,
-        )
+    if _is_release_intake_payload(validated_payload):
+        try:
+            airtable_result = _sync_airtable(
+                payload=validated_payload,
+                submission_id=submission_id,
+                edit_token=edit_token,
+            )
 
-        airtable_project_id = airtable_result["airtable_project"]["id"]
-        _update_submission_airtable_success(submission_id, airtable_project_id)
+            airtable_project_id = airtable_result["airtable_project"]["id"]
+            _update_submission_airtable_success(submission_id, airtable_project_id)
 
-        _persist_airtable_track_ids(
-            created_tracks=created_tracks,
-            airtable_tracks=airtable_result["airtable_tracks"],
-        )
+            _persist_airtable_track_ids(
+                created_tracks=created_tracks,
+                airtable_tracks=airtable_result["airtable_tracks"],
+            )
 
-    except Exception as exc:
-        airtable_error = str(exc)
-        _update_submission_airtable_failed(submission_id, airtable_error)
-        logger.exception("Airtable sync failed")
+        except Exception as exc:
+            airtable_error = str(exc)
+            _update_submission_airtable_failed(submission_id, airtable_error)
+            logger.exception("Airtable sync failed")
 
-    identification = payload.identification
-    project = payload.project
-    release_date = _normalize_release_date(getattr(project, "release_date", None))
-    primary_artist = _get_primary_artist(payload)
+    release_date = _get_submission_release_date(validated_payload)
+    primary_artist = _get_primary_artist(validated_payload)
     days_until_release = _calculate_days_until_release(release_date)
-    edit_url = _build_edit_url(edit_token, payload.workspace_slug)
+    edit_url = _build_edit_url(
+        edit_token,
+        validated_payload.workspace_slug,
+        _submission_workflow_type(validated_payload),
+    )
     email_subject = _build_post_submit_email_subject(
-        project_title=identification.project_title,
+        project_title=_get_submission_project_title(validated_payload),
         release_date=release_date,
         primary_artist=primary_artist,
     )
@@ -832,62 +1275,95 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
     email_error: Optional[str] = None
     email_result: Optional[Dict[str, Any]] = None
     email_sent = False
+    email_status = "pending"
     notification_email_error: Optional[str] = None
     notification_email_status = "skipped"
     notification_email_recipients = 0
 
-    try:
-        email_result = send_edit_link_email(
-            to_email=identification.submitter_email,
-            edit_token=edit_token,
-            project_title=identification.project_title,
-            release_date=release_date,
-            primary_artist=primary_artist,
-            days_until_release=days_until_release,
-            recipient_name=identification.submitter_name,
-            workspace_slug=payload.workspace_slug,
-        )
+    supports_workflow_routed_edit_email = (
+        "workflow_type" in inspect.signature(send_edit_link_email).parameters
+    )
 
-        provider_message_id = email_result.get("provider_message_id")
-        if not provider_message_id:
-            raise RuntimeError(
-                "Email provider accepted the request but did not return a message id"
+    if (
+        _submission_workflow_type(validated_payload) == RIGHTS_CLEARANCE_WORKFLOW_TYPE
+        and not supports_workflow_routed_edit_email
+    ):
+        email_status = "skipped"
+        email_error = (
+            "Workflow-specific post-submit email routing is not enabled in this "
+            "backend instance."
+        )
+        _update_submission_email_skipped(submission_id, email_error)
+        logger.warning(
+            "Skipping post-submit email submission_id=%s workflow_type=%s because email.py does not support workflow routing yet",
+            submission_id,
+            _submission_workflow_type(validated_payload),
+        )
+    else:
+        try:
+            email_kwargs = {
+                "to_email": _get_submission_contact_email(validated_payload),
+                "edit_token": edit_token,
+                "project_title": _get_submission_project_title(validated_payload),
+                "release_date": release_date,
+                "primary_artist": primary_artist,
+                "days_until_release": days_until_release,
+                "recipient_name": _get_submission_contact_name(validated_payload),
+                "workspace_slug": validated_payload.workspace_slug,
+            }
+            if supports_workflow_routed_edit_email:
+                email_kwargs["workflow_type"] = _submission_workflow_type(validated_payload)
+
+            email_result = send_edit_link_email(**email_kwargs)
+
+            provider_message_id = email_result.get("provider_message_id")
+            if not provider_message_id:
+                raise RuntimeError(
+                    "Email provider accepted the request but did not return a message id"
+                )
+
+            logger.info(
+                "Post-submit email accepted submission_id=%s to_email=%s subject=%s edit_url=%s provider_message_id=%s provider_response=%s",
+                submission_id,
+                email_result.get("to_email"),
+                email_result.get("subject"),
+                email_result.get("edit_url"),
+                provider_message_id,
+                email_result.get("provider_response"),
             )
 
-        logger.info(
-            "Post-submit email accepted submission_id=%s to_email=%s subject=%s edit_url=%s provider_message_id=%s provider_response=%s",
-            submission_id,
-            email_result.get("to_email"),
-            email_result.get("subject"),
-            email_result.get("edit_url"),
-            provider_message_id,
-            email_result.get("provider_response"),
-        )
-
-        _update_submission_email_sent(submission_id)
-        email_sent = True
-    except Exception as exc:
-        email_error = str(exc)
-        logger.error(
-            "Post-submit email failed submission_id=%s to_email=%s subject=%s edit_url=%s error=%s",
-            submission_id,
-            identification.submitter_email,
-            email_subject,
-            edit_url,
-            email_error,
-        )
-        _update_submission_email_failed(submission_id, email_error)
-        logger.exception("Edit link email failed")
+            _update_submission_email_sent(submission_id)
+            email_sent = True
+            email_status = "ok"
+        except Exception as exc:
+            email_error = str(exc)
+            email_status = "failed"
+            logger.error(
+                "Post-submit email failed submission_id=%s to_email=%s subject=%s edit_url=%s error=%s",
+                submission_id,
+                _get_submission_contact_email(validated_payload),
+                email_subject,
+                edit_url,
+                email_error,
+            )
+            _update_submission_email_failed(submission_id, email_error)
+            logger.exception("Edit link email failed")
 
     try:
-        workspace_email_settings = _load_workspace_email_settings(payload.workspace_slug)
+        workspace_email_settings = _load_workspace_email_settings(
+            validated_payload.workspace_slug
+        )
         notification_emails = workspace_email_settings["notification_emails"]
         notification_email_recipients = len(notification_emails)
 
         if (
+            _is_release_intake_payload(validated_payload)
+            and
             workspace_email_settings["submission_email_enabled"]
             and notification_emails
         ):
+            identification = validated_payload.identification
+            project = validated_payload.project
             send_submission_summary_email(
                 to_emails=notification_emails,
                 workspace_name=workspace_email_settings["workspace_name"],
@@ -897,8 +1373,8 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
                 release_type=identification.release_type,
                 release_date=release_date,
                 genre=project.genre,
-                focus_track_name=_get_focus_track_name(payload),
-                track_titles=[track.title for track in payload.tracks],
+                focus_track_name=_get_focus_track_name(validated_payload),
+                track_titles=[track.title for track in validated_payload.tracks],
                 edit_url=edit_url,
             )
             notification_email_status = "ok"
@@ -914,19 +1390,23 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
     response: Dict[str, Any] = {
         "ok": True,
         "submission_id": submission_id,
-        "draft_token": _as_uuid(payload.draft_token),
+        "draft_token": _as_uuid(validated_payload.draft_token),
         "edit_token": edit_token,
         "tracks_created": len(created_tracks),
         "message": "Submission created successfully.",
         "workflow": {
-            "workspace_slug": payload.workspace_slug,
-            "workflow_type": _submission_workflow_type(payload),
-            "form_version": _submission_form_version(payload),
+            "workspace_slug": validated_payload.workspace_slug,
+            "workflow_type": _submission_workflow_type(validated_payload),
+            "form_version": _submission_form_version(validated_payload),
         },
         "sync": {
             "supabase": "ok",
-            "airtable": "ok" if not airtable_error else "failed",
-            "email": "ok" if email_sent else "failed",
+            "airtable": (
+                "skipped"
+                if _is_rights_clearance_payload(validated_payload) and not airtable_error
+                else "ok" if not airtable_error else "failed"
+            ),
+            "email": email_status,
             "notification_email": notification_email_status,
         },
     }
@@ -943,7 +1423,7 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
         response["email_error"] = email_error
 
     response["email_debug"] = {
-        "to_email": identification.submitter_email,
+        "to_email": _get_submission_contact_email(validated_payload),
         "subject": (email_result or {}).get("subject") or email_subject,
         "edit_url": (email_result or {}).get("edit_url") or edit_url,
         "provider_response": (email_result or {}).get("provider_response"),
