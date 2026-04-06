@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import json
 import secrets
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
@@ -25,6 +25,8 @@ router = APIRouter(prefix="/submissions", tags=["Submissions"])
 
 EMAIL_SETTINGS_STEP_KEY = "__workspace_settings__"
 EMAIL_SETTINGS_FIELD_KEY = "submission_notification_emails"
+DEFAULT_WORKFLOW_TYPE = "release_intake"
+DEFAULT_FORM_VERSION = "legacy_v1"
 
 
 def _utc_now_iso() -> str:
@@ -53,21 +55,134 @@ def _safe_model_dump(obj: Any) -> Dict[str, Any]:
     return dict(obj)
 
 
+def _submission_workflow_type(payload: SubmissionPayload) -> str:
+    workflow_type = getattr(payload, "workflow_type", None)
+    text = str(workflow_type or "").strip()
+    return text or DEFAULT_WORKFLOW_TYPE
+
+
+def _submission_form_version(payload: SubmissionPayload) -> str:
+    meta = getattr(payload, "meta", None)
+    form_version = getattr(meta, "form_version", None)
+    text = str(form_version or "").strip()
+    return text or DEFAULT_FORM_VERSION
+
+
 def _get_focus_track_name(payload: SubmissionPayload) -> Optional[str]:
+    focus_track = _get_focus_track(payload)
+    if focus_track and getattr(focus_track, "title", None):
+        return focus_track.title
+
     marketing = payload.marketing
 
     if marketing and getattr(marketing, "focus_track_name", None):
         return marketing.focus_track_name
 
-    if payload.tracks:
-        focus = next(
-            (track for track in payload.tracks if getattr(track, "is_focus_track", False)),
+    return None
+
+
+def _get_focus_track(payload: SubmissionPayload) -> Any | None:
+    marketing = payload.marketing
+    focus_track_name = str(
+        getattr(marketing, "focus_track_name", "") or ""
+    ).strip().lower()
+
+    if focus_track_name:
+        matching_track = next(
+            (
+                track
+                for track in payload.tracks
+                if str(getattr(track, "title", "") or "").strip().lower() == focus_track_name
+            ),
             None,
         )
-        if focus:
-            return focus.title
+        if matching_track:
+            return matching_track
+
+    focus_track = next(
+        (track for track in payload.tracks if getattr(track, "is_focus_track", False)),
+        None,
+    )
+    if focus_track:
+        return focus_track
+
+    return payload.tracks[0] if payload.tracks else None
+
+
+def _get_primary_artist(payload: SubmissionPayload) -> Optional[str]:
+    focus_track = _get_focus_track(payload)
+    if focus_track:
+        primary_artist = str(getattr(focus_track, "primary_artists", "") or "").strip()
+        if primary_artist:
+            return primary_artist
+
+    first_track = payload.tracks[0] if payload.tracks else None
+    if first_track:
+        primary_artist = str(getattr(first_track, "primary_artists", "") or "").strip()
+        if primary_artist:
+            return primary_artist
 
     return None
+
+
+def _normalize_release_date(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _parse_release_date(value: Any) -> Optional[date]:
+    text = _normalize_release_date(value)
+    if not text:
+        return None
+
+    candidates = [text]
+    if "T" in text:
+        candidates.append(text.split("T", 1)[0])
+    if " " in text:
+        candidates.append(text.split(" ", 1)[0])
+
+    for candidate in candidates:
+        normalized = candidate.strip()
+        if not normalized:
+            continue
+
+        try:
+            return date.fromisoformat(normalized)
+        except ValueError:
+            pass
+
+        try:
+            return datetime.fromisoformat(
+                normalized.replace("Z", "+00:00")
+            ).date()
+        except ValueError:
+            continue
+
+    return None
+
+
+def _calculate_days_until_release(release_date: Any) -> Optional[int]:
+    parsed_release_date = _parse_release_date(release_date)
+    if not parsed_release_date:
+        return None
+
+    today = datetime.now().date()
+    return (parsed_release_date - today).days
+
+
+def _build_post_submit_email_subject(
+    *,
+    project_title: Optional[str],
+    release_date: Optional[str],
+    primary_artist: Optional[str],
+) -> str:
+    safe_project_title = str(project_title or "").strip() or "Projeto sem titulo"
+    safe_release_date = str(release_date or "").strip() or "data nao informada"
+    safe_primary_artist = str(primary_artist or "").strip() or "artista nao informado"
+    return (
+        f"Resumo do lançamento - {safe_project_title} - "
+        f"{safe_release_date} + {safe_primary_artist}"
+    )
 
 
 def _bool_from_yes_no(value: Any) -> bool:
@@ -224,6 +339,186 @@ def _build_submission_row(
     }
 
 
+def _as_dict(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _as_list(value: Any) -> List[Any]:
+    if isinstance(value, list):
+        return value
+    return []
+
+
+def _parse_json_string(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+
+    text = value.strip()
+    if not text:
+        return None
+
+    try:
+        return json.loads(text)
+    except Exception:
+        return value
+
+
+def _coerce_dict(value: Any) -> Dict[str, Any]:
+    parsed = _parse_json_string(value)
+    if isinstance(parsed, dict):
+        return parsed
+    return {}
+
+
+def _coerce_list(value: Any) -> List[Any]:
+    parsed = _parse_json_string(value)
+    if isinstance(parsed, list):
+        return parsed
+    return []
+
+
+def _strip_empty_values(value: Any) -> Any:
+    if isinstance(value, dict):
+        cleaned: Dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = _strip_empty_values(item)
+            if normalized in (None, "", [], {}):
+                continue
+            cleaned[key] = normalized
+        return cleaned
+
+    if isinstance(value, list):
+        cleaned_list = [
+            normalized
+            for item in value
+            for normalized in [_strip_empty_values(item)]
+            if normalized not in (None, "", [], {})
+        ]
+        return cleaned_list
+
+    if isinstance(value, str):
+        normalized_text = value.strip()
+        return normalized_text or None
+
+    return value
+
+
+def _has_meaningful_values(value: Any) -> bool:
+    normalized = _strip_empty_values(value)
+    return normalized not in (None, "", [], {})
+
+
+def _normalize_edit_submission_data(row: Dict[str, Any]) -> Dict[str, Any]:
+    raw_payload = row.get("payload")
+    raw_marketing_json = row.get("marketing_json")
+    raw_tracks_json = row.get("tracks_json")
+
+    payload = _coerce_dict(raw_payload)
+    meta = _coerce_dict(payload.get("meta"))
+
+    identification = _coerce_dict(payload.get("identification"))
+    if not identification:
+        identification = _strip_empty_values({
+            "submitter_name": row.get("artist_name") or "",
+            "submitter_email": row.get("email") or "",
+            "project_title": row.get("release_title") or row.get("main_title") or "",
+            "release_type": row.get("release_type") or "",
+        }) or {}
+    else:
+        identification = _strip_empty_values(identification) or {}
+
+    project = _coerce_dict(payload.get("project"))
+    if not project:
+        project = _strip_empty_values({
+            "release_date": row.get("release_date") or "",
+            "genre": row.get("genre") or "",
+            "cover_link": row.get("cover_url") or "",
+            "cover_file": {
+                "storage_path": row.get("cover_path") or "",
+                "public_url": row.get("cover_url") or "",
+            }
+            if row.get("cover_url") or row.get("cover_path")
+            else None,
+        }) or {}
+    else:
+        project = _strip_empty_values(project) or {}
+
+    marketing = _strip_empty_values(
+        _coerce_dict(payload.get("marketing")) or _coerce_dict(raw_marketing_json)
+    ) or {}
+    tracks = _strip_empty_values(
+        _coerce_list(payload.get("tracks")) or _coerce_list(raw_tracks_json)
+    ) or []
+
+    debug = {
+        "has_payload": bool(payload),
+        "has_marketing_json": bool(raw_marketing_json),
+        "has_tracks_json": bool(raw_tracks_json),
+        "payload_is_string": isinstance(raw_payload, str),
+        "marketing_json_is_string": isinstance(raw_marketing_json, str),
+        "tracks_json_is_string": isinstance(raw_tracks_json, str),
+        "payload_type": type(raw_payload).__name__,
+        "marketing_json_type": type(raw_marketing_json).__name__,
+        "tracks_json_type": type(raw_tracks_json).__name__,
+        "has_identification_data": _has_meaningful_values(identification),
+        "has_project_data": _has_meaningful_values(project),
+        "has_marketing_data": _has_meaningful_values(marketing),
+        "normalized_tracks_count": len(tracks),
+        "normalized_release_date": project.get("release_date") or "",
+        "normalized_video_release_date": project.get("video_release_date") or "",
+        "hydration_ready": bool(
+            _has_meaningful_values(identification)
+            or _has_meaningful_values(project)
+            or _has_meaningful_values(marketing)
+            or len(tracks) > 0
+        ),
+        "shape_source": (
+            "payload"
+            if payload
+            else "marketing_json_or_tracks_json"
+            if marketing or tracks
+            else "row_fallback"
+        ),
+    }
+
+    logger.info(
+        "Edit submission normalized: submission_id=%s has_payload=%s payload_is_string=%s has_marketing_json=%s marketing_json_is_string=%s has_tracks_json=%s tracks_json_is_string=%s has_identification_data=%s has_project_data=%s has_marketing_data=%s normalized_tracks_count=%s hydration_ready=%s shape_source=%s",
+        row.get("id"),
+        debug["has_payload"],
+        debug["payload_is_string"],
+        debug["has_marketing_json"],
+        debug["marketing_json_is_string"],
+        debug["has_tracks_json"],
+        debug["tracks_json_is_string"],
+        debug["has_identification_data"],
+        debug["has_project_data"],
+        debug["has_marketing_data"],
+        debug["normalized_tracks_count"],
+        debug["hydration_ready"],
+        debug["shape_source"],
+    )
+
+    return {
+        "submission_id": row.get("id"),
+        "draft_token": row.get("draft_token"),
+        "edit_token": row.get("edit_token"),
+        "workspace_slug": payload.get("workspace_slug") or row.get("client_slug"),
+        "workflow_type": payload.get("workflow_type") or DEFAULT_WORKFLOW_TYPE,
+        "identification": identification,
+        "project": project,
+        "marketing": marketing,
+        "tracks": tracks,
+        "meta": {
+            "form_version": meta.get("form_version") or DEFAULT_FORM_VERSION,
+            "source": meta.get("source"),
+            "submitted_at": meta.get("submitted_at") or row.get("submitted_at"),
+        },
+        "debug": debug,
+    }
+
+
 def _normalize_notification_emails(value: Any) -> List[str]:
     if not isinstance(value, list):
         return []
@@ -366,16 +661,6 @@ def _build_airtable_track_rows(payload: SubmissionPayload) -> List[Dict[str, Any
     return rows
 
 
-
-
-def _sync_google_drive(payload: SubmissionPayload) -> Dict[str, Any]:
-    if not settings.GOOGLE_DRIVE_ENABLED:
-        return {"ok": True, "status": "skipped", "reason": "disabled"}
-
-    from app.services.google_drive import sync_submission_to_google_drive
-
-    return sync_submission_to_google_drive(payload)
-
 def _sync_airtable(
     *,
     payload: SubmissionPayload,
@@ -446,15 +731,29 @@ async def load_edit_submission(edit_token: str):
     if not result.data:
         raise HTTPException(status_code=404, detail="Submission not found")
 
+    row = result.data[0]
+    logger.info(
+        "Loading edit submission: edit_token=%s submission_id=%s payload_type=%s marketing_json_type=%s tracks_json_type=%s",
+        edit_token,
+        row.get("id"),
+        type(row.get("payload")).__name__,
+        type(row.get("marketing_json")).__name__,
+        type(row.get("tracks_json")).__name__,
+    )
     return {
         "ok": True,
-        "data": result.data[0],
+        "data": _normalize_edit_submission_data(row),
     }
 
 
 @router.post("")
 def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
-    logger.info("Creating submission")
+    logger.info(
+        "Creating submission workspace_slug=%s workflow_type=%s form_version=%s",
+        payload.workspace_slug,
+        _submission_workflow_type(payload),
+        _submission_form_version(payload),
+    )
 
     now_iso = _utc_now_iso()
     submission_id = str(uuid4())
@@ -518,34 +817,65 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
         _update_submission_airtable_failed(submission_id, airtable_error)
         logger.exception("Airtable sync failed")
 
-    drive_result: Optional[Dict[str, Any]] = None
-    drive_error: Optional[str] = None
-
-    try:
-        drive_result = _sync_google_drive(payload)
-    except Exception as exc:
-        drive_error = str(exc)
-        logger.exception("Google Drive sync failed")
+    identification = payload.identification
+    project = payload.project
+    release_date = _normalize_release_date(getattr(project, "release_date", None))
+    primary_artist = _get_primary_artist(payload)
+    days_until_release = _calculate_days_until_release(release_date)
+    edit_url = _build_edit_url(edit_token, payload.workspace_slug)
+    email_subject = _build_post_submit_email_subject(
+        project_title=identification.project_title,
+        release_date=release_date,
+        primary_artist=primary_artist,
+    )
 
     email_error: Optional[str] = None
+    email_result: Optional[Dict[str, Any]] = None
     email_sent = False
     notification_email_error: Optional[str] = None
     notification_email_status = "skipped"
     notification_email_recipients = 0
 
     try:
-        identification = payload.identification
-        send_edit_link_email(
+        email_result = send_edit_link_email(
             to_email=identification.submitter_email,
             edit_token=edit_token,
             project_title=identification.project_title,
+            release_date=release_date,
+            primary_artist=primary_artist,
+            days_until_release=days_until_release,
             recipient_name=identification.submitter_name,
             workspace_slug=payload.workspace_slug,
         )
+
+        provider_message_id = email_result.get("provider_message_id")
+        if not provider_message_id:
+            raise RuntimeError(
+                "Email provider accepted the request but did not return a message id"
+            )
+
+        logger.info(
+            "Post-submit email accepted submission_id=%s to_email=%s subject=%s edit_url=%s provider_message_id=%s provider_response=%s",
+            submission_id,
+            email_result.get("to_email"),
+            email_result.get("subject"),
+            email_result.get("edit_url"),
+            provider_message_id,
+            email_result.get("provider_response"),
+        )
+
         _update_submission_email_sent(submission_id)
         email_sent = True
     except Exception as exc:
         email_error = str(exc)
+        logger.error(
+            "Post-submit email failed submission_id=%s to_email=%s subject=%s edit_url=%s error=%s",
+            submission_id,
+            identification.submitter_email,
+            email_subject,
+            edit_url,
+            email_error,
+        )
         _update_submission_email_failed(submission_id, email_error)
         logger.exception("Edit link email failed")
 
@@ -558,9 +888,6 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
             workspace_email_settings["submission_email_enabled"]
             and notification_emails
         ):
-            identification = payload.identification
-            project = payload.project
-
             send_submission_summary_email(
                 to_emails=notification_emails,
                 workspace_name=workspace_email_settings["workspace_name"],
@@ -568,11 +895,11 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
                 submitter_email=identification.submitter_email,
                 project_title=identification.project_title,
                 release_type=identification.release_type,
-                release_date=str(project.release_date) if project.release_date else None,
+                release_date=release_date,
                 genre=project.genre,
                 focus_track_name=_get_focus_track_name(payload),
                 track_titles=[track.title for track in payload.tracks],
-                edit_url=_build_edit_url(edit_token, payload.workspace_slug),
+                edit_url=edit_url,
             )
             notification_email_status = "ok"
         elif workspace_email_settings["submission_email_enabled"]:
@@ -591,10 +918,14 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
         "edit_token": edit_token,
         "tracks_created": len(created_tracks),
         "message": "Submission created successfully.",
+        "workflow": {
+            "workspace_slug": payload.workspace_slug,
+            "workflow_type": _submission_workflow_type(payload),
+            "form_version": _submission_form_version(payload),
+        },
         "sync": {
             "supabase": "ok",
             "airtable": "ok" if not airtable_error else "failed",
-            "drive": (drive_result or {}).get("status", "failed") if not drive_error else "failed",
             "email": "ok" if email_sent else "failed",
             "notification_email": notification_email_status,
         },
@@ -608,14 +939,16 @@ def create_submission(payload: SubmissionPayload) -> Dict[str, Any]:
     if airtable_error:
         response["airtable_error"] = airtable_error
 
-    if drive_result:
-        response["drive"] = drive_result
-
-    if drive_error:
-        response["drive_error"] = drive_error
-
     if email_error:
         response["email_error"] = email_error
+
+    response["email_debug"] = {
+        "to_email": identification.submitter_email,
+        "subject": (email_result or {}).get("subject") or email_subject,
+        "edit_url": (email_result or {}).get("edit_url") or edit_url,
+        "provider_response": (email_result or {}).get("provider_response"),
+        "provider_message_id": (email_result or {}).get("provider_message_id"),
+    }
 
     response["notification_email_recipients"] = notification_email_recipients
 

@@ -30,11 +30,37 @@ def _normalize_recipients(value: str | Iterable[str]) -> List[str]:
     return unique
 
 
+def _extract_provider_message_id(
+    provider_response: Any,
+    headers: requests.structures.CaseInsensitiveDict[str] | Dict[str, Any],
+) -> Optional[str]:
+    if isinstance(provider_response, dict):
+        for key in ("id", "message_id", "messageId"):
+            value = provider_response.get(key)
+            if value:
+                return str(value)
+
+        data = provider_response.get("data")
+        if isinstance(data, dict):
+            for key in ("id", "message_id", "messageId"):
+                value = data.get(key)
+                if value:
+                    return str(value)
+
+    for header_name in ("x-message-id", "x-email-id"):
+        header_value = headers.get(header_name)
+        if header_value:
+            return str(header_value)
+
+    return None
+
+
 def _post_resend(
     *,
     to_email: str | Iterable[str],
     subject: str,
     html: str,
+    edit_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not settings.RESEND_API_KEY:
         raise RuntimeError("RESEND_API_KEY is not configured")
@@ -61,11 +87,44 @@ def _post_resend(
         timeout=30,
     )
 
-    if response.status_code >= 400:
-        logger.error("Resend error: %s", response.text)
-        raise RuntimeError(f"Failed to send email: {response.text}")
+    response_text = response.text
 
-    return response.json()
+    try:
+        provider_response = response.json() if response_text else {}
+    except ValueError:
+        provider_response = {"raw_text": response_text}
+
+    if response.status_code >= 400:
+        logger.error(
+            "Resend error status=%s subject=%s response=%s",
+            response.status_code,
+            subject,
+            provider_response,
+        )
+        raise RuntimeError(f"Failed to send email: {response_text}")
+
+    provider_message_id = _extract_provider_message_id(
+        provider_response,
+        response.headers,
+    )
+
+    logger.info(
+        "Resend accepted email subject=%s recipients=%s status=%s message_id=%s response=%s",
+        subject,
+        recipients,
+        response.status_code,
+        provider_message_id,
+        provider_response,
+    )
+
+    return {
+        "provider": "resend",
+        "provider_status_code": response.status_code,
+        "provider_response": provider_response,
+        "provider_message_id": provider_message_id,
+        "subject": subject,
+        "edit_url": edit_url,
+    }
 
 
 def build_edit_url(edit_token: str, workspace_slug: str = "atabaque") -> str:
@@ -86,11 +145,33 @@ def _wrap_email_html(content: str) -> str:
     """
 
 
+def _build_days_until_release_copy(days_until_release: Optional[int]) -> str:
+    if days_until_release is None:
+        return "Nao foi possivel calcular quantos dias faltam para o lancamento."
+
+    if days_until_release > 1:
+        return f"Faltam <strong>{days_until_release}</strong> dias para o lancamento."
+
+    if days_until_release == 1:
+        return "Falta <strong>1</strong> dia para o lancamento."
+
+    if days_until_release == 0:
+        return "O lancamento esta previsto para <strong>hoje</strong>."
+
+    return (
+        f"A data informada indica que o lancamento ocorreu ha "
+        f"<strong>{abs(days_until_release)}</strong> dias."
+    )
+
+
 def send_edit_link_email(
     *,
     to_email: str,
     edit_token: str,
     project_title: Optional[str] = None,
+    release_date: Optional[str] = None,
+    primary_artist: Optional[str] = None,
+    days_until_release: Optional[int] = None,
     recipient_name: Optional[str] = None,
     workspace_slug: str = "atabaque",
 ) -> Dict[str, Any]:
@@ -99,7 +180,14 @@ def send_edit_link_email(
         workspace_slug=workspace_slug,
     )
 
-    subject = "Editar submissao"
+    safe_project_title = (project_title or "").strip() or "Projeto sem titulo"
+    safe_release_date = (release_date or "").strip() or "data nao informada"
+    safe_primary_artist = (primary_artist or "").strip() or "artista nao informado"
+
+    subject = (
+        f"Resumo do lan\u00e7amento - {safe_project_title} - "
+        f"{safe_release_date} + {safe_primary_artist}"
+    )
 
     greeting = (
         f"Ola, {escape(recipient_name)}!"
@@ -107,22 +195,32 @@ def send_edit_link_email(
         else "Ola!"
     )
     project_line = (
-        f"Sua submissao para <strong>{escape(project_title)}</strong> foi recebida."
-        if project_title
-        else "Sua submissao foi recebida."
+        f"Recebemos o envio do lancamento "
+        f"<strong>{escape(safe_project_title)}</strong>."
     )
+    release_date_line = (
+        f"A data informada para o lancamento e "
+        f"<strong>{escape(safe_release_date)}</strong>."
+    )
+    days_until_release_line = _build_days_until_release_copy(days_until_release)
 
     html = _wrap_email_html(
         f"""
         <p>{greeting}</p>
+        <p>Obrigada pelo envio.</p>
         <p>{project_line}</p>
-        <p>Voce pode editar sua submissao pelo link abaixo:</p>
+        <p>{release_date_line}</p>
+        <p>{days_until_release_line}</p>
+        <p>
+          A partir do link abaixo, voce pode editar a submissao sempre que precisar
+          revisar ou atualizar as informacoes enviadas:
+        </p>
         <p>
           <a href="{edit_url}" style="color: #2563eb; text-decoration: none;">
             {edit_url}
           </a>
         </p>
-        <p>Se voce nao solicitou alteracoes, pode ignorar este email.</p>
+        <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
         """
     )
 
@@ -130,7 +228,8 @@ def send_edit_link_email(
         to_email=to_email,
         subject=subject,
         html=html,
-    )
+        edit_url=edit_url,
+    ) | {"to_email": to_email}
 
 
 def send_draft_link_email(
