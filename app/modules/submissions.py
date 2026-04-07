@@ -8,7 +8,7 @@ from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 
 from app.core.config import settings
 from app.core.database import supabase
@@ -30,6 +30,7 @@ from app.services.airtable import (
     update_airtable_project_focus_track,
 )
 from app.services.email import send_edit_link_email, send_submission_summary_email
+from app.services.google_drive import sync_submission_to_google_drive
 
 logger = logging.getLogger("sunbeat.submissions")
 
@@ -63,6 +64,71 @@ def _safe_model_dump(obj: Any) -> Dict[str, Any]:
     if isinstance(obj, dict):
         return obj
     return dict(obj)
+
+
+def _run_google_drive_sync_task(
+    payload: WorkflowSubmissionPayload,
+    submission_id: str,
+) -> None:
+    try:
+        drive_result = sync_submission_to_google_drive(payload)
+    except Exception:
+        logger.exception(
+            "Google Drive background sync raised unexpectedly submission_id=%s",
+            submission_id,
+        )
+        return
+
+    status = str(drive_result.get("status") or "unknown")
+    log_method = logger.warning if status in {"partial", "failed"} else logger.info
+    log_method(
+        "Google Drive background sync finished submission_id=%s status=%s result=%s",
+        submission_id,
+        status,
+        drive_result,
+    )
+
+
+def _queue_google_drive_sync(
+    background_tasks: BackgroundTasks,
+    payload: WorkflowSubmissionPayload,
+    submission_id: str,
+) -> Dict[str, Any]:
+    if not _is_release_intake_payload(payload):
+        return {"ok": True, "status": "skipped"}
+
+    if not settings.GOOGLE_DRIVE_ENABLED:
+        logger.info(
+            "Google Drive sync skipped submission_id=%s reason=disabled",
+            submission_id,
+        )
+        return {"ok": True, "status": "skipped"}
+
+    drive_payload = (
+        payload.model_copy(deep=True)
+        if hasattr(payload, "model_copy")
+        else validate_submission_payload(_safe_model_dump(payload))
+    )
+
+    try:
+        background_tasks.add_task(
+            _run_google_drive_sync_task,
+            drive_payload,
+            submission_id,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to queue Google Drive background sync submission_id=%s",
+            submission_id,
+        )
+        return {"ok": False, "status": "failed"}
+
+    logger.info(
+        "Google Drive background sync queued submission_id=%s workspace_slug=%s",
+        submission_id,
+        payload.workspace_slug,
+    )
+    return {"ok": True, "status": "partial"}
 
 
 def _is_rights_clearance_payload(payload: WorkflowSubmissionPayload) -> bool:
@@ -1185,7 +1251,10 @@ async def load_edit_submission(edit_token: str):
 
 
 @router.post("")
-def create_submission(payload: Dict[str, Any]) -> Dict[str, Any]:
+def create_submission(
+    payload: Dict[str, Any],
+    background_tasks: BackgroundTasks,
+) -> Dict[str, Any]:
     validated_payload = validate_submission_payload(payload)
 
     logger.info(
@@ -1257,6 +1326,12 @@ def create_submission(payload: Dict[str, Any]) -> Dict[str, Any]:
             airtable_error = str(exc)
             _update_submission_airtable_failed(submission_id, airtable_error)
             logger.exception("Airtable sync failed")
+
+    drive_sync = _queue_google_drive_sync(
+        background_tasks=background_tasks,
+        payload=validated_payload,
+        submission_id=submission_id,
+    )
 
     release_date = _get_submission_release_date(validated_payload)
     primary_artist = _get_primary_artist(validated_payload)
@@ -1394,6 +1469,7 @@ def create_submission(payload: Dict[str, Any]) -> Dict[str, Any]:
         "edit_token": edit_token,
         "tracks_created": len(created_tracks),
         "message": "Submission created successfully.",
+        "drive_sync": drive_sync,
         "workflow": {
             "workspace_slug": validated_payload.workspace_slug,
             "workflow_type": _submission_workflow_type(validated_payload),

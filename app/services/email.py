@@ -139,8 +139,12 @@ def build_draft_resume_url(draft_token: str, workspace_slug: str = "atabaque") -
 
 def _wrap_email_html(content: str) -> str:
     return f"""
-    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
-      {content}
+    <div style="background-color: #f9fafb; padding: 32px 16px; font-family: Arial, sans-serif;">
+      <div style="max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 12px; border: 1px solid #e5e7eb; padding: 32px; line-height: 1.7; color: #111827;">
+        {content}
+        <hr style="margin: 32px 0; border: none; border-top: 1px solid #e5e7eb;">
+        <p style="margin: 0; font-size: 12px; color: #6b7280; text-align: center;">Sunbeat &mdash; Infraestrutura para Lançamentos Musicais</p>
+      </div>
     </div>
     """
 
@@ -216,7 +220,7 @@ def send_edit_link_email(
           revisar ou atualizar as informacoes enviadas:
         </p>
         <p>
-          <a href="{edit_url}" style="color: #2563eb; text-decoration: none;">
+          <a href="{edit_url}" style="color: #1d4ed8; text-decoration: underline; word-break: break-all;">
             {edit_url}
           </a>
         </p>
@@ -264,7 +268,7 @@ def send_draft_link_email(
         <p>{project_line}</p>
         <p>Voce pode continuar o preenchimento pelo link abaixo:</p>
         <p>
-          <a href="{draft_url}" style="color: #2563eb; text-decoration: none;">
+          <a href="{draft_url}" style="color: #1d4ed8; text-decoration: underline; word-break: break-all;">
             {draft_url}
           </a>
         </p>
@@ -319,26 +323,26 @@ def send_submission_summary_email(
         f"""
         <p>O intake da <strong>{safe_workspace_name}</strong> recebeu uma nova submissao.</p>
 
-        <table style="border-collapse: collapse; width: 100%; margin: 24px 0;">
+        <table style="border-collapse: collapse; width: 100%; margin: 24px 0; background: #f9fafb; border-radius: 8px; overflow: hidden;">
           <tbody>
-            <tr><td style="padding: 8px 0; color: #6b7280;">Projeto</td><td style="padding: 8px 0;"><strong>{safe_project_title}</strong></td></tr>
-            <tr><td style="padding: 8px 0; color: #6b7280;">Responsavel</td><td style="padding: 8px 0;">{safe_submitter_name}</td></tr>
-            <tr><td style="padding: 8px 0; color: #6b7280;">E-mail</td><td style="padding: 8px 0;">{safe_submitter_email}</td></tr>
-            <tr><td style="padding: 8px 0; color: #6b7280;">Tipo de lancamento</td><td style="padding: 8px 0;">{safe_release_type}</td></tr>
-            <tr><td style="padding: 8px 0; color: #6b7280;">Data prevista</td><td style="padding: 8px 0;">{safe_release_date}</td></tr>
-            <tr><td style="padding: 8px 0; color: #6b7280;">Genero</td><td style="padding: 8px 0;">{safe_genre}</td></tr>
-            <tr><td style="padding: 8px 0; color: #6b7280;">Faixa foco</td><td style="padding: 8px 0;">{safe_focus_track_name}</td></tr>
+            <tr><td style="padding: 10px 14px; color: #374151; font-weight: 600; white-space: nowrap; vertical-align: top; border-bottom: 1px solid #e5e7eb;">Projeto</td><td style="padding: 10px 14px; color: #111827; border-bottom: 1px solid #e5e7eb;"><strong>{safe_project_title}</strong></td></tr>
+            <tr><td style="padding: 10px 14px; color: #374151; font-weight: 600; white-space: nowrap; vertical-align: top; border-bottom: 1px solid #e5e7eb;">Responsavel</td><td style="padding: 10px 14px; color: #111827; border-bottom: 1px solid #e5e7eb;">{safe_submitter_name}</td></tr>
+            <tr><td style="padding: 10px 14px; color: #374151; font-weight: 600; white-space: nowrap; vertical-align: top; border-bottom: 1px solid #e5e7eb;">E-mail</td><td style="padding: 10px 14px; color: #111827; border-bottom: 1px solid #e5e7eb;">{safe_submitter_email}</td></tr>
+            <tr><td style="padding: 10px 14px; color: #374151; font-weight: 600; white-space: nowrap; vertical-align: top; border-bottom: 1px solid #e5e7eb;">Tipo de lancamento</td><td style="padding: 10px 14px; color: #111827; border-bottom: 1px solid #e5e7eb;">{safe_release_type}</td></tr>
+            <tr><td style="padding: 10px 14px; color: #374151; font-weight: 600; white-space: nowrap; vertical-align: top; border-bottom: 1px solid #e5e7eb;">Data prevista</td><td style="padding: 10px 14px; color: #111827; border-bottom: 1px solid #e5e7eb;">{safe_release_date}</td></tr>
+            <tr><td style="padding: 10px 14px; color: #374151; font-weight: 600; white-space: nowrap; vertical-align: top; border-bottom: 1px solid #e5e7eb;">Genero</td><td style="padding: 10px 14px; color: #111827; border-bottom: 1px solid #e5e7eb;">{safe_genre}</td></tr>
+            <tr><td style="padding: 10px 14px; color: #374151; font-weight: 600; white-space: nowrap; vertical-align: top;">Faixa foco</td><td style="padding: 10px 14px; color: #111827;">{safe_focus_track_name}</td></tr>
           </tbody>
         </table>
 
         <p style="margin-bottom: 8px;"><strong>Faixas enviadas</strong></p>
-        <ul style="margin-top: 0; padding-left: 18px;">
+        <ul style="margin-top: 0; padding-left: 18px; color: #111827;">
           {tracks_html}
         </ul>
 
         <p style="margin-top: 24px;">Para revisar ou ajustar a submissao, use o link abaixo:</p>
         <p>
-          <a href="{edit_url}" style="color: #2563eb; text-decoration: none;">
+          <a href="{edit_url}" style="color: #1d4ed8; text-decoration: underline; word-break: break-all;">
             {edit_url}
           </a>
         </p>
