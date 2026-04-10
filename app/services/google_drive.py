@@ -284,6 +284,22 @@ def _get_mime_type(file_ref: Any) -> str:
     return "application/octet-stream"
 
 
+def _get_storage_ref(file_ref: Any) -> str:
+    if hasattr(file_ref, "storage_bucket") or hasattr(file_ref, "storage_path"):
+        bucket = str(getattr(file_ref, "storage_bucket", "") or "").strip()
+        path = str(getattr(file_ref, "storage_path", "") or "").strip()
+    elif isinstance(file_ref, dict):
+        bucket = str(file_ref.get("storage_bucket") or "").strip()
+        path = str(file_ref.get("storage_path") or "").strip()
+    else:
+        bucket = ""
+        path = ""
+
+    if bucket and path:
+        return f"{bucket}:{path}"
+    return path or bucket or "unknown"
+
+
 def _download_bytes(url: str) -> bytes:
     response = requests.get(url, timeout=180)
     response.raise_for_status()
@@ -292,11 +308,27 @@ def _download_bytes(url: str) -> bytes:
 
 def _upload_file_from_ref(service: Any, *, folder_id: str, file_ref: Any, fallback_name: str):
     file_url = _pick_file_url(file_ref)
+    file_name = _get_file_name(file_ref, fallback_name)
+    storage_ref = _get_storage_ref(file_ref)
+
     if not file_url:
+        logger.warning(
+            "Google Drive upload skipped: missing file URL folder_id=%s file_name=%s storage_ref=%s",
+            folder_id,
+            file_name,
+            storage_ref,
+        )
         return None
 
-    file_name = _get_file_name(file_ref, fallback_name)
     mime_type = _get_mime_type(file_ref)
+    logger.info(
+        "Google Drive upload starting: folder_id=%s file_name=%s mime_type=%s storage_ref=%s source_url=%s",
+        folder_id,
+        file_name,
+        mime_type,
+        storage_ref,
+        file_url,
+    )
     content = _download_bytes(file_url)
     media = MediaIoBaseUpload(io.BytesIO(content), mimetype=mime_type, resumable=False)
     metadata = {"name": file_name, "parents": [folder_id]}
@@ -304,8 +336,15 @@ def _upload_file_from_ref(service: Any, *, folder_id: str, file_ref: Any, fallba
         body=metadata,
         media_body=media,
         fields="id,name,mimeType,webViewLink",
+        supportsAllDrives=True,
     ).execute()
-    logger.info("Google Drive file uploaded: %s (%s)", created["name"], created["id"])
+    logger.info(
+        "Google Drive file uploaded: folder_id=%s file_name=%s file_id=%s mime_type=%s",
+        folder_id,
+        created["name"],
+        created["id"],
+        created.get("mimeType"),
+    )
     return created
 
 
@@ -575,6 +614,7 @@ def sync_submission_to_google_drive(payload: Any) -> Dict[str, Any]:
                 if created:
                     uploaded_files.append({"bucket": "Capa", "file": created})
             except Exception as exc:
+                logger.exception("Google Drive cover upload failed")
                 upload_errors.append(f"Capa: {exc}")
 
         for index, track in enumerate(getattr(payload, "tracks", []) or [], start=1):
@@ -591,6 +631,11 @@ def sync_submission_to_google_drive(payload: Any) -> Dict[str, Any]:
                 if created:
                     uploaded_files.append({"bucket": "Audios", "file": created})
             except Exception as exc:
+                logger.exception(
+                    "Google Drive audio upload failed track_index=%s track_title=%s",
+                    index,
+                    getattr(track, "title", None),
+                )
                 upload_errors.append(f"Audios track {index}: {exc}")
 
         for index, extra_file in enumerate(getattr(marketing, "additional_files", []) or [], start=1):
@@ -604,6 +649,7 @@ def sync_submission_to_google_drive(payload: Any) -> Dict[str, Any]:
                 if created:
                     uploaded_files.append({"bucket": "Outros", "file": created})
             except Exception as exc:
+                logger.exception("Google Drive additional file upload failed file_index=%s", index)
                 upload_errors.append(f"Outros file {index}: {exc}")
 
         return {
