@@ -51,9 +51,9 @@ def _normalized_phone(value: Any) -> Optional[str]:
         return None
 
     normalized = PHONE_PATTERN.sub("", text)
-    if normalized.count(#+") > 1:
+    if normalized.count("+") > 1:
         normalized = normalized.replace("+", "")
-    if #+" in normalized and not normalized.startswith(#+"):
+    if "+" in normalized and not normalized.startswith("+"):
         normalized = normalized.replace("+", "")
 
     return normalized or None
