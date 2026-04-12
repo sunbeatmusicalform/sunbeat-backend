@@ -5,6 +5,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.modules.people_registry import router as people_registry_router
 from app.modules.release_drafts import router as drafts_router
 from app.modules.submissions import router as submissions_router
 from app.modules.workspaces import router as workspaces_router
@@ -34,6 +35,7 @@ app.add_middleware(
 )
 
 app.include_router(drafts_router)
+app.include_router(people_registry_router)
 app.include_router(submissions_router)
 app.include_router(workspaces_router)
 
