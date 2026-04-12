@@ -796,9 +796,18 @@ def _normalize_edit_submission_data(row: Dict[str, Any]) -> Dict[str, Any]:
     payload = _coerce_dict(raw_payload)
     meta = _coerce_dict(payload.get("meta"))
     workspace_slug = payload.get("workspace_slug") or row.get("client_slug") or "atabaque"
+    # Fallback: se payload.workflow_type estiver ausente, usa row.release_type
+    # apenas quando ele for um workflow type reconhecido (ex: "rights_clearance").
+    # Valores de release_type legados como "single"/"ep"/"album" são ignorados.
+    _row_release_type = str(row.get("release_type") or "").strip()
+    _workflow_type_hint = (
+        _row_release_type
+        if _row_release_type == RIGHTS_CLEARANCE_WORKFLOW_TYPE
+        else None
+    )
     workflow_identity = resolve_workflow_identity(
         workspace_slug=workspace_slug,
-        workflow_type=payload.get("workflow_type"),
+        workflow_type=payload.get("workflow_type") or _workflow_type_hint or None,
         form_version=meta.get("form_version"),
     )
 

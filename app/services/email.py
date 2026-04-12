@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import requests
 
 from app.core.config import settings
+from app.modules.workflow_registry import build_frontend_workflow_path
 
 logger = logging.getLogger("sunbeat.email")
 
@@ -127,9 +128,17 @@ def _post_resend(
     }
 
 
-def build_edit_url(edit_token: str, workspace_slug: str = "atabaque") -> str:
+def build_edit_url(
+    edit_token: str,
+    workspace_slug: str = "atabaque",
+    workflow_type: Optional[str] = None,
+) -> str:
     base = settings.FRONTEND_BASE_URL.rstrip("/")
-    return f"{base}/intake/{workspace_slug}?edit_token={edit_token}"
+    path = build_frontend_workflow_path(
+        workspace_slug=workspace_slug,
+        workflow_type=workflow_type,
+    )
+    return f"{base}{path}?edit_token={edit_token}"
 
 
 def build_draft_resume_url(draft_token: str, workspace_slug: str = "atabaque") -> str:
@@ -178,10 +187,12 @@ def send_edit_link_email(
     days_until_release: Optional[int] = None,
     recipient_name: Optional[str] = None,
     workspace_slug: str = "atabaque",
+    workflow_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     edit_url = build_edit_url(
         edit_token=edit_token,
         workspace_slug=workspace_slug,
+        workflow_type=workflow_type,
     )
 
     safe_project_title = (project_title or "").strip() or "Projeto sem titulo"
