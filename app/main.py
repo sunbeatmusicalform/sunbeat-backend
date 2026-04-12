@@ -5,6 +5,7 @@ import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.modules.ai_gateway import router as ai_gateway_router
 from app.modules.people_registry import router as people_registry_router
 from app.modules.release_drafts import router as drafts_router
 from app.modules.submissions import router as submissions_router
@@ -38,6 +39,7 @@ app.include_router(drafts_router)
 app.include_router(people_registry_router)
 app.include_router(submissions_router)
 app.include_router(workspaces_router)
+app.include_router(ai_gateway_router)
 
 
 @app.get("/health")

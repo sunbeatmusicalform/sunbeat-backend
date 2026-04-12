@@ -15,6 +15,19 @@ class Settings(BaseSettings):
 
     FRONTEND_BASE_URL: str = Field(default="https://sunbeat.pro")
 
+    AI_GATEWAY_ENABLED: bool = Field(default=False)
+    AI_READINESS_ENABLED: bool = Field(default=False)
+    AI_REQUEST_TIMEOUT_SECONDS: int = Field(default=30)
+    AI_ENABLED_SURFACES: str = Field(default="")
+    AI_PUBLIC_ENABLED_DOMAINS: str = Field(default="")
+    AI_ENABLED_WORKSPACE_SLUGS: str = Field(default="")
+
+    DEEPSEEK_API_KEY: str | None = Field(default=None)
+    DEEPSEEK_API_BASE_URL: str = Field(default="https://api.deepseek.com")
+
+    GEMINI_API_KEY: str | None = Field(default=None)
+    GEMINI_API_BASE_URL: str = Field(default="https://generativelanguage.googleapis.com")
+
     RESEND_API_KEY: str | None = Field(default=None)
     RESEND_FROM_EMAIL: str | None = Field(default="noreply@sunbeat.pro")
     RESEND_FROM_NAME: str = Field(default="Sunbeat")
