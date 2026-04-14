@@ -86,6 +86,33 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _extract_first_row(result: Any) -> Optional[Dict[str, Any]]:
+    rows = getattr(result, "data", None)
+    if isinstance(rows, list):
+        return rows[0] if rows else None
+    if isinstance(rows, dict):
+        return rows
+    return None
+
+
+def build_people_registry_record_payload_from_row(
+    row: Dict[str, Any],
+) -> PeopleRegistryRecordPayload:
+    return PeopleRegistryRecordPayload(
+        record_id=str(row.get("id") or ""),
+        airtable_sync_status=str(row.get("airtable_sync_status") or "pending"),
+        created_at=str(row.get("created_at") or ""),
+        updated_at=str(row.get("updated_at") or ""),
+    )
+
+
+def build_people_registry_prepared_payload_from_row(
+    row: Dict[str, Any],
+) -> PeopleRegistryPreparedPayload:
+    stored_payload = row.get("payload") or {}
+    return PeopleRegistryPreparedPayload.model_validate(stored_payload)
+
+
 def normalize_people_registry_payload(
     payload: PeopleRegistryPayload,
 ) -> PeopleRegistryPreparedPayload:
@@ -216,10 +243,7 @@ def validate_people_registry_payload(
     if not prepared.party.roles:
         issues.append(_issue("party.roles", "At least one role is required."))
 
-    if not (
-        prepared.party.document_id
-        or prepared.contact.email_primary
-    ):
+    if not (prepared.party.document_id or prepared.contact.email_primary):
         issues.append(
             _issue(
                 "party.document_id",
@@ -326,17 +350,61 @@ def build_people_registry_insert_row(
     }
 
 
+def find_people_registry_duplicate_record(
+    prepared: PeopleRegistryPreparedPayload,
+) -> Optional[tuple[Dict[str, Any], str]]:
+    if prepared.party.document_id:
+        result = (
+            supabase.table(PEOPLE_REGISTRY_TABLE)
+            .select("*")
+            .eq("workspace_slug", prepared.workspace_slug)
+            .eq("document_id", prepared.party.document_id)
+            .order("created_at", desc=False)
+            .limit(1)
+            .execute()
+        )
+        row = _extract_first_row(result)
+        if row:
+            return row, "party.document_id"
+
+    if not prepared.party.document_id and prepared.contact.email_primary:
+        result = (
+            supabase.table(PEOPLE_REGISTRY_TABLE)
+            .select("*")
+            .eq("workspace_slug", prepared.workspace_slug)
+            .eq("email_primary", prepared.contact.email_primary)
+            .order("created_at", desc=False)
+            .limit(1)
+            .execute()
+        )
+        row = _extract_first_row(result)
+        if row:
+            return row, "contact.email_primary"
+
+    return None
+
+
+def fetch_people_registry_record_by_id(record_id: str) -> Optional[Dict[str, Any]]:
+    result = (
+        supabase.table(PEOPLE_REGISTRY_TABLE)
+        .select("*")
+        .eq("id", record_id)
+        .limit(1)
+        .execute()
+    )
+    return _extract_first_row(result)
+
+
 def persist_people_registry_prepared_payload(
     prepared: PeopleRegistryPreparedPayload,
 ) -> PeopleRegistryRecordPayload:
     row = build_people_registry_insert_row(prepared)
     result = supabase.table(PEOPLE_REGISTRY_TABLE).insert(row).execute()
-    created_rows = getattr(result, "data", None) or []
+    created = _extract_first_row(result)
 
-    if not created_rows:
+    if not created:
         raise RuntimeError("People registry record was not persisted.")
 
-    created = created_rows[0]
     return PeopleRegistryRecordPayload(
         record_id=str(created.get("id") or row["id"]),
         airtable_sync_status=str(
@@ -355,6 +423,43 @@ def create_people_registry_record_response(
         return validation_response
 
     prepared = validation_response.data
+
+    try:
+        duplicate = find_people_registry_duplicate_record(prepared)
+    except Exception as exc:
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="error",
+            data=prepared,
+            record=None,
+            error=build_people_registry_error_detail(
+                code="people_registry_duplicate_lookup_failed",
+                message=f"Could not check people registry duplicates: {exc}",
+                stage="people_registry_duplicate_lookup",
+                issues=[],
+            ),
+        )
+
+    if duplicate:
+        duplicate_row, duplicate_field = duplicate
+        duplicate_value = prepared.party.document_id or prepared.contact.email_primary
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="conflict",
+            data=prepared,
+            record=build_people_registry_record_payload_from_row(duplicate_row),
+            error=build_people_registry_error_detail(
+                code="people_registry_duplicate_conflict",
+                message="A matching people registry record already exists in this workspace.",
+                stage="people_registry_duplicate_lookup",
+                issues=[
+                    _issue(
+                        duplicate_field,
+                        f"Duplicate match found for {duplicate_field}={duplicate_value}.",
+                    )
+                ],
+            ),
+        )
 
     try:
         record = persist_people_registry_prepared_payload(prepared)
@@ -377,5 +482,45 @@ def create_people_registry_record_response(
         status="created",
         data=prepared,
         record=record,
+        error=None,
+    )
+
+
+def get_people_registry_record_response(record_id: str) -> PeopleRegistryResponsePayload:
+    try:
+        row = fetch_people_registry_record_by_id(record_id)
+    except Exception as exc:
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="error",
+            data=None,
+            record=None,
+            error=build_people_registry_error_detail(
+                code="people_registry_fetch_failed",
+                message=f"Could not fetch people registry record: {exc}",
+                stage="people_registry_fetch",
+                issues=[],
+            ),
+        )
+
+    if not row:
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="error",
+            data=None,
+            record=None,
+            error=build_people_registry_error_detail(
+                code="people_registry_record_not_found",
+                message="People registry record was not found.",
+                stage="people_registry_fetch",
+                issues=[],
+            ),
+        )
+
+    return PeopleRegistryResponsePayload(
+        ok=True,
+        status="fetched",
+        data=build_people_registry_prepared_payload_from_row(row),
+        record=build_people_registry_record_payload_from_row(row),
         error=None,
     )

@@ -7,7 +7,9 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 PartyKind = Literal["pf", "pj"]
 PeopleRegistryWorkflowType = Literal["people_registry"]
 PeopleRegistryAirtableSyncStatus = Literal["pending", "blocked", "failed", "synced"]
-PeopleRegistryResponseStatus = Literal["validated", "invalid", "created", "error"]
+PeopleRegistryResponseStatus = Literal[
+    "validated", "invalid", "created", "fetched", "conflict", "error"
+]
 
 
 class PeopleRegistryPartyPayload(BaseModel):
