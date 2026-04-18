@@ -279,6 +279,63 @@ def send_draft_link_email(
     )
 
 
+def send_first_stage_completion_email(
+    *,
+    to_emails: Iterable[str],
+    workspace_name: str,
+    submitter_name: Optional[str],
+    submitter_email: str,
+    project_title: Optional[str],
+    draft_token: str,
+    current_step: Optional[str],
+    workspace_slug: str = "atabaque",
+) -> Dict[str, Any]:
+    recipients = _normalize_recipients(to_emails)
+    if not recipients:
+        raise RuntimeError("No notification recipients configured")
+
+    draft_url = build_draft_resume_url(
+        draft_token=draft_token,
+        workspace_slug=workspace_slug,
+    )
+
+    safe_workspace_name = escape(workspace_name or "Sunbeat")
+    safe_project_title = escape(project_title or "Sem titulo")
+    safe_submitter_name = escape(submitter_name or "Responsavel nao informado")
+    safe_submitter_email = escape(submitter_email or "Nao informado")
+    safe_current_step = escape(current_step or "nao informado")
+
+    subject = f"Primeira etapa concluida - {project_title or workspace_name}"
+
+    html = _wrap_email_html(
+        f"""
+        <p>O intake da <strong>{safe_workspace_name}</strong> recebeu a conclusao da primeira etapa do formulario.</p>
+
+        <table style="border-collapse: collapse; width: 100%; margin: 24px 0;">
+          <tbody>
+            <tr><td style="padding: 8px 0; color: #6b7280;">Projeto</td><td style="padding: 8px 0;"><strong>{safe_project_title}</strong></td></tr>
+            <tr><td style="padding: 8px 0; color: #6b7280;">Responsavel</td><td style="padding: 8px 0;">{safe_submitter_name}</td></tr>
+            <tr><td style="padding: 8px 0; color: #6b7280;">E-mail</td><td style="padding: 8px 0;">{safe_submitter_email}</td></tr>
+            <tr><td style="padding: 8px 0; color: #6b7280;">Etapa atual</td><td style="padding: 8px 0;">{safe_current_step}</td></tr>
+          </tbody>
+        </table>
+
+        <p>Para continuar o atendimento operacional ou retomar o rascunho, use o link abaixo:</p>
+        <p>
+          <a href="{draft_url}" style="color: #2563eb; text-decoration: none;">
+            {draft_url}
+          </a>
+        </p>
+        """
+    )
+
+    return _post_resend(
+        to_email=recipients,
+        subject=subject,
+        html=html,
+    ) | {"draft_url": draft_url}
+
+
 def send_submission_summary_email(
     *,
     to_emails: Iterable[str],
