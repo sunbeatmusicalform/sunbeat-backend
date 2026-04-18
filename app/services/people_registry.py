@@ -159,6 +159,8 @@ def normalize_people_registry_payload(
         update={
             "pix_key": _normalized_text(banking_data.get("pix_key")),
             "bank_name": _normalized_text(banking_data.get("bank_name")),
+            "bank_agency": _normalized_text(banking_data.get("bank_agency")),
+            "account_number": _normalized_text(banking_data.get("account_number")),
             "account_holder_name": _normalized_text(
                 banking_data.get("account_holder_name")
             ),
