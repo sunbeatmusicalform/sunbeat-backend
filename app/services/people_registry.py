@@ -15,6 +15,9 @@ from app.schemas.people_registry import (
     PeopleRegistryResponsePayload,
     PeopleRegistryValidationIssuePayload,
 )
+from app.services.people_registry_airtable_sync import (
+    sync_people_registry_record_to_airtable,
+)
 
 SLUG_TEXT_PATTERN = re.compile(r"[^a-z0-9_-]+")
 DOCUMENT_PATTERN = re.compile(r"[^A-Za-z0-9]+")
@@ -478,6 +481,22 @@ def create_people_registry_record_response(
                 issues=[],
             ),
         )
+
+    try:
+        sync_people_registry_record_to_airtable(
+            record_id=record.record_id,
+            prepared=prepared,
+        )
+    except Exception:
+        # Preserve Supabase as the canonical write even if the Airtable hook fails unexpectedly.
+        pass
+
+    try:
+        persisted_row = fetch_people_registry_record_by_id(record.record_id)
+        if persisted_row:
+            record = build_people_registry_record_payload_from_row(persisted_row)
+    except Exception:
+        pass
 
     return PeopleRegistryResponsePayload(
         ok=True,
