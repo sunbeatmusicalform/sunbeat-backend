@@ -294,6 +294,7 @@ def send_first_stage_completion_email(
     draft_token: str,
     current_step: Optional[str],
     workspace_slug: str = "atabaque",
+    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     recipients = _normalize_recipients(to_emails)
     if not recipients:
@@ -334,11 +335,21 @@ def send_first_stage_completion_email(
         """
     )
 
-    return _post_resend(
+    email_result = _post_resend(
         to_email=recipients,
         subject=subject,
         html=html,
-    ) | {"draft_url": draft_url}
+        idempotency_key=idempotency_key,
+    )
+    email_status = (
+        "sent"
+        if email_result.get("provider_message_id")
+        else "sent_without_message_id"
+    )
+    return email_result | {
+        "draft_url": draft_url,
+        "status": email_status,
+    }
 
 
 def send_submission_summary_email(

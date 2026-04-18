@@ -115,10 +115,35 @@ def _is_first_stage_complete(
     )
 
 
+def _persist_first_stage_completion_email_meta(
+    *,
+    draft_token: str,
+    expected_updated_at: Any,
+    meta: Dict[str, Any],
+    sent_at: str,
+) -> bool:
+    query = (
+        supabase.table("release_intake_drafts")
+        .update(
+            {
+                "meta": meta,
+                "updated_at": sent_at,
+            }
+        )
+        .eq("draft_token", draft_token)
+    )
+    if expected_updated_at is not None:
+        query = query.eq("updated_at", expected_updated_at)
+
+    result = query.execute()
+    return bool(result.data)
+
+
 def _maybe_send_first_stage_completion_email(
     draft: Dict[str, Any],
 ) -> Dict[str, Any]:
     workspace_slug = draft.get("client_slug") or DEFAULT_WORKSPACE_SLUG
+    draft_token = str(draft.get("draft_token") or "").strip()
     meta = _ensure_identity_meta(
         draft.get("meta") or {},
         workspace_slug=workspace_slug,
@@ -140,7 +165,7 @@ def _maybe_send_first_stage_completion_email(
         logger.info(
             "first_stage_completion_email skipped workspace_slug=%s draft_token=%s reason=no_recipients_or_disabled",
             workspace_slug,
-            draft.get("draft_token"),
+            draft_token,
         )
         return meta
 
@@ -153,25 +178,51 @@ def _maybe_send_first_stage_completion_email(
             submitter_name=contact["submitter_name"],
             submitter_email=contact["submitter_email"],
             project_title=contact["project_title"],
-            draft_token=draft["draft_token"],
+            draft_token=draft_token,
             current_step=draft.get("current_step"),
             workspace_slug=workspace_slug,
+            idempotency_key=f"{draft_token}:first_stage",
         )
-        provider_message_id = email_result.get("provider_message_id")
-        if not provider_message_id:
-            raise RuntimeError(
-                "Email provider accepted the request but did not return a message id"
-            )
     except Exception:
-        logger.exception(
-            "first_stage_completion_email failed workspace_slug=%s draft_token=%s",
+        logger.warning(
+            "first_stage_completion_email provider_failed workspace_slug=%s draft_token=%s",
             workspace_slug,
-            draft.get("draft_token"),
+            draft_token,
+            exc_info=True,
         )
         return meta
 
+    email_status = str(email_result.get("status") or "").strip().lower()
+    if email_status not in {"sent", "sent_without_message_id"}:
+        logger.warning(
+            "first_stage_completion_email failed workspace_slug=%s draft_token=%s status=%s",
+            workspace_slug,
+            draft_token,
+            email_status or "unknown",
+        )
+        return meta
+
+    provider_message_id = email_result.get("provider_message_id")
+    latest_draft = _load_draft_row(draft_token)
+    latest_meta_source = latest_draft.get("meta") if latest_draft else meta
+    latest_meta = _ensure_identity_meta(
+        latest_meta_source or {},
+        workspace_slug=workspace_slug,
+        workflow_type=(latest_draft or {}).get("meta", {}).get("workflow_type")
+        if latest_draft and isinstance(latest_draft.get("meta"), dict)
+        else meta.get("workflow_type"),
+    )
+
+    if latest_meta.get("first_stage_completion_email_sent"):
+        logger.info(
+            "first_stage_completion_email already_sent_by_other workspace_slug=%s draft_token=%s reason=fresh_read",
+            workspace_slug,
+            draft_token,
+        )
+        return latest_meta
+
     sent_at = utc_now_iso()
-    updated_meta = dict(meta)
+    updated_meta = dict(latest_meta)
     updated_meta.update(
         {
             "first_stage_completion_email_sent": True,
@@ -182,29 +233,40 @@ def _maybe_send_first_stage_completion_email(
     )
 
     try:
-        (
-            supabase.table("release_intake_drafts")
-            .update(
-                {
-                    "meta": updated_meta,
-                    "updated_at": sent_at,
-                }
-            )
-            .eq("draft_token", draft["draft_token"])
-            .execute()
+        persisted = _persist_first_stage_completion_email_meta(
+            draft_token=draft_token,
+            expected_updated_at=(latest_draft or {}).get("updated_at"),
+            meta=updated_meta,
+            sent_at=sent_at,
         )
     except Exception:
-        logger.exception(
-            "first_stage_completion_email state update failed workspace_slug=%s draft_token=%s",
+        logger.warning(
+            "first_stage_completion_email sent_but_flag_failed workspace_slug=%s draft_token=%s",
             workspace_slug,
-            draft.get("draft_token"),
+            draft_token,
+            exc_info=True,
         )
-        return meta
+        return latest_meta
+
+    if not persisted:
+        logger.info(
+            "first_stage_completion_email already_sent_by_other workspace_slug=%s draft_token=%s reason=guard_conflict",
+            workspace_slug,
+            draft_token,
+        )
+        freshest_draft = _load_draft_row(draft_token)
+        if freshest_draft and isinstance(freshest_draft.get("meta"), dict):
+            return _ensure_identity_meta(
+                freshest_draft.get("meta") or {},
+                workspace_slug=workspace_slug,
+                workflow_type=(freshest_draft.get("meta") or {}).get("workflow_type"),
+            )
+        return latest_meta
 
     logger.info(
         "first_stage_completion_email sent workspace_slug=%s draft_token=%s recipients=%d step=%s message_id=%s",
         workspace_slug,
-        draft.get("draft_token"),
+        draft_token,
         len(notification_emails),
         draft.get("current_step"),
         provider_message_id,
