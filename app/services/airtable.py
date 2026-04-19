@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 import unicodedata
 from typing import Any, Dict, Iterable, List, Optional
@@ -10,10 +11,14 @@ import httpx
 from app.core.config import settings
 from app.core.database import supabase
 
+logger = logging.getLogger(__name__)
+
 AIRTABLE_API_URL = "https://api.airtable.com/v0"
 REQUEST_TIMEOUT = 30.0
 MAX_RETRIES = 3
 RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+TRACK_STATUS_ACTIVE = "Ativa"
+TRACK_STATUS_REMOVED = "Removida"
 
 
 def _airtable_headers() -> Dict[str, str]:
@@ -393,6 +398,51 @@ def _linked_record_contains(
     return False
 
 
+def _is_unknown_field_error(error_message: str) -> bool:
+    if not error_message:
+        return False
+    lowered = error_message.lower()
+    return (
+        "unknown_field_name" in lowered
+        or "unknown field name" in lowered
+    )
+
+
+def _try_set_track_status(
+    track_record_id: str,
+    status_value: str,
+) -> Optional[Dict[str, Any]]:
+    """PATCH the track status field tolerantly.
+
+    If the Airtable base does not have the configured status field, log a
+    warning and return None instead of failing the whole sync. Any other
+    errors propagate so they are surfaced through the normal retry / logging
+    paths.
+    """
+
+    status_field = _track_status_field()
+    url = f"{_table_url(_tracks_table_name())}/{track_record_id}"
+    payload = {
+        "fields": {status_field: status_value},
+        "typecast": True,
+    }
+
+    try:
+        return _request_json("PATCH", url, payload)
+    except RuntimeError as exc:
+        message = str(exc)
+        if _is_unknown_field_error(message):
+            logger.warning(
+                "Airtable track status field '%s' is missing; skipping status "
+                "patch for record %s (value=%s)",
+                status_field,
+                track_record_id,
+                status_value,
+            )
+            return None
+        raise
+
+
 def _ensure_track_project_link(
     *,
     track_record_id: str,
@@ -574,19 +624,14 @@ def upsert_airtable_tracks(
             continue
 
         if track.get("deleted_at"):
-            record = _request_json(
-                "PATCH",
-                f"{_table_url(_tracks_table_name())}/{airtable_track_id}",
-                {
-                    "fields": {
-                        _track_status_field(): "Removida",
-                    },
-                    "typecast": True,
-                },
+            record = _try_set_track_status(
+                airtable_track_id, TRACK_STATUS_REMOVED
             )
+            fields = (record or {}).get("fields", {}) or {}
             synced_tracks.append(
                 {
-                    **record,
+                    "id": (record or {}).get("id", airtable_track_id),
+                    "fields": fields,
                     "submission_track_id": track["id"],
                     "client_track_id": track.get("client_track_id"),
                     "deleted_at": track.get("deleted_at"),
@@ -603,6 +648,10 @@ def upsert_airtable_tracks(
             f"{_table_url(_tracks_table_name())}/{airtable_track_id}",
             {"fields": fields, "typecast": True},
         )
+        # Always enforce "Ativa" on active tracks (covers reactivation
+        # idempotently). Tolerant: if the field does not exist in the base,
+        # this logs a warning and continues without breaking the sync.
+        _try_set_track_status(airtable_track_id, TRACK_STATUS_ACTIVE)
         synced_tracks.append(
             {
                 **record,

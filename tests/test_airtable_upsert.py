@@ -225,7 +225,9 @@ class AirtableUpsertTests(unittest.TestCase):
 
         methods = [call["method"] for call in request_calls]
         self.assertEqual(methods.count("POST"), 1)
-        self.assertEqual(methods.count("PATCH"), 2)
+        # PATCHes: 1 canonical on recTrackExisting, 1 Ativa on recTrackExisting,
+        # 1 Removida on recTrackRemoved.
+        self.assertEqual(methods.count("PATCH"), 3)
         self.assertEqual(fake_supabase.store["tracks"][1]["airtable_track_id"], "recTrackNew")
         self.assertEqual(len(result), 3)
 
@@ -233,6 +235,180 @@ class AirtableUpsertTests(unittest.TestCase):
         self.assertEqual(
             removed_call["payload"]["fields"]["Status da Faixa"],
             "Removida",
+        )
+
+        # Ativa must be stamped on the active, already-linked track (covers
+        # reactivation idempotently).
+        existing_calls = [
+            call for call in request_calls if call["url"].endswith("/recTrackExisting")
+        ]
+        self.assertEqual(len(existing_calls), 2)
+        self.assertEqual(
+            existing_calls[1]["payload"]["fields"]["Status da Faixa"],
+            "Ativa",
+        )
+
+    def test_upsert_airtable_tracks_tolerates_missing_status_field(self) -> None:
+        """When the 'Status da Faixa' field is absent from the Airtable base,
+        the sync must not fail: canonical PATCH still runs, and the status
+        PATCH is skipped with a warning."""
+
+        fake_supabase = _FakeSupabase(
+            {
+                "tracks": [
+                    {"id": "track-existing", "airtable_track_id": "recTrackExisting"},
+                    {"id": "track-removed", "airtable_track_id": "recTrackRemoved"},
+                ]
+            }
+        )
+        request_calls: list[dict] = []
+
+        unknown_field_error = RuntimeError(
+            "Airtable HTTP 422: {'error': {'type': 'UNKNOWN_FIELD_NAME', "
+            "'message': \"Unknown field name: 'Status da Faixa'\"}}"
+        )
+
+        def request_side_effect(method: str, url: str, payload: dict | None = None, params: dict | None = None) -> dict:
+            request_calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "payload": deepcopy(payload),
+                    "params": deepcopy(params),
+                }
+            )
+            fields = (payload or {}).get("fields", {}) or {}
+            # Simulate the Airtable base without the status field: any PATCH
+            # that targets ONLY the status field fails with UNKNOWN_FIELD_NAME.
+            if list(fields.keys()) == ["Status da Faixa"]:
+                raise unknown_field_error
+            if url.endswith("/recTrackExisting"):
+                return {"id": "recTrackExisting", "fields": {"Ordem da Faixa": 1}}
+            raise AssertionError(f"Unexpected Airtable request: {method} {url}")
+
+        submission = _submission(airtable_project_id="recProject")
+        tracks = [
+            {
+                "id": "track-existing",
+                "client_track_id": "ct-existing",
+                "airtable_track_id": "recTrackExisting",
+                "deleted_at": None,
+                "order_number": 1,
+                "title": "Faixa A",
+                "artists": "Ana",
+                "authors": "Ana",
+                "lyrics": "Letra A",
+            },
+            {
+                "id": "track-removed",
+                "client_track_id": "ct-removed",
+                "airtable_track_id": "recTrackRemoved",
+                "deleted_at": "2026-04-18T12:00:00+00:00",
+                "order_number": 2,
+                "title": "Faixa B",
+                "artists": "Ana",
+                "authors": "Ana",
+                "lyrics": "Letra B",
+            },
+        ]
+
+        with (
+            patch.object(airtable_module, "supabase", fake_supabase),
+            patch.object(airtable_module, "_request_json", side_effect=request_side_effect),
+            patch.object(airtable_module, "_table_url", side_effect=lambda table_name: f"https://airtable/{table_name}"),
+            patch.object(airtable_module, "_tracks_table_name", return_value="tracks"),
+            patch.object(airtable_module, "_track_project_link_field", return_value="Projeto"),
+            patch.object(airtable_module, "_track_status_field", return_value="Status da Faixa"),
+        ):
+            # Must not raise even though the status field is missing.
+            result = airtable_module.upsert_airtable_tracks(submission, tracks)
+
+        methods = [call["method"] for call in request_calls]
+        # 1 canonical PATCH on recTrackExisting, 1 status PATCH that fails,
+        # 1 status PATCH on recTrackRemoved that fails.
+        self.assertEqual(methods.count("PATCH"), 3)
+        self.assertEqual(len(result), 2)
+
+        # The canonical fields PATCH for the active track must have landed
+        # regardless of the status field being absent.
+        canonical_existing = [
+            call
+            for call in request_calls
+            if call["url"].endswith("/recTrackExisting")
+            and "Ordem da Faixa" in (call["payload"] or {}).get("fields", {})
+        ]
+        self.assertEqual(len(canonical_existing), 1)
+
+        # The removed track result entry keeps the airtable id and carries the
+        # deleted_at marker even though Airtable could not reflect the status.
+        removed_entry = next(
+            entry for entry in result if entry["submission_track_id"] == "track-removed"
+        )
+        self.assertEqual(removed_entry["id"], "recTrackRemoved")
+        self.assertEqual(
+            removed_entry["deleted_at"], "2026-04-18T12:00:00+00:00"
+        )
+
+    def test_upsert_airtable_tracks_forces_ativa_on_reactivation(self) -> None:
+        """A track whose deleted_at transitions from set to None on edit must
+        receive a PATCH of Status da Faixa = 'Ativa' so Airtable reflects the
+        reactivation without waiting for manual review."""
+
+        fake_supabase = _FakeSupabase(
+            {
+                "tracks": [
+                    {
+                        "id": "track-reactivated",
+                        "airtable_track_id": "recTrackReactivated",
+                    },
+                ]
+            }
+        )
+        request_calls: list[dict] = []
+
+        def request_side_effect(method: str, url: str, payload: dict | None = None, params: dict | None = None) -> dict:
+            request_calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "payload": deepcopy(payload),
+                }
+            )
+            return {"id": "recTrackReactivated", "fields": {"Ordem da Faixa": 1}}
+
+        submission = _submission(airtable_project_id="recProject")
+        tracks = [
+            {
+                "id": "track-reactivated",
+                "client_track_id": "ct-reactivated",
+                "airtable_track_id": "recTrackReactivated",
+                "deleted_at": None,  # reactivated: deleted_at cleared on this edit
+                "order_number": 1,
+                "title": "Faixa Reativada",
+                "artists": "Ana",
+                "authors": "Ana",
+                "lyrics": "Letra",
+            },
+        ]
+
+        with (
+            patch.object(airtable_module, "supabase", fake_supabase),
+            patch.object(airtable_module, "_request_json", side_effect=request_side_effect),
+            patch.object(airtable_module, "_table_url", side_effect=lambda table_name: f"https://airtable/{table_name}"),
+            patch.object(airtable_module, "_tracks_table_name", return_value="tracks"),
+            patch.object(airtable_module, "_track_project_link_field", return_value="Projeto"),
+            patch.object(airtable_module, "_track_status_field", return_value="Status da Faixa"),
+        ):
+            airtable_module.upsert_airtable_tracks(submission, tracks)
+
+        # Exactly two PATCHes: one canonical, one stamping Ativa.
+        self.assertEqual(len(request_calls), 2)
+        self.assertEqual(request_calls[0]["method"], "PATCH")
+        self.assertIn("Ordem da Faixa", request_calls[0]["payload"]["fields"])
+        self.assertEqual(request_calls[1]["method"], "PATCH")
+        self.assertEqual(
+            request_calls[1]["payload"]["fields"],
+            {"Status da Faixa": "Ativa"},
         )
 
 
