@@ -63,6 +63,7 @@ class TrackPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     local_id: str
+    client_track_id: Optional[str] = None
     order_number: int
     title: str = Field(..., min_length=1)
     is_focus_track: Optional[bool] = False
@@ -108,6 +109,7 @@ class ReleaseIntakeSubmissionPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     draft_token: str
+    edit_token: Optional[str] = None
     workspace_slug: str
     workflow_type: WorkflowType = "release_intake"
     identification: IdentificationPayload
