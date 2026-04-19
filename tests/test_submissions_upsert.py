@@ -188,6 +188,45 @@ def _submission_row(*, payload: dict | None = None, version: int = 1) -> dict:
     }
 
 
+def _rights_clearance_payload(*, draft_token: str = DRAFT_TOKEN) -> dict:
+    return {
+        "draft_token": draft_token,
+        "workspace_slug": "atabaque",
+        "workflow_type": "rights_clearance",
+        "requester_identification": {
+            "requester_name": "Ana",
+            "requester_email": "ana@example.com",
+            "requester_company": "Atabaque",
+            "requester_role": "Artist",
+        },
+        "request_type": {
+            "clearance_format": "music_release_clearance_intake",
+        },
+        "project_context": {
+            "project_title": "Projeto Direitos",
+            "responsible_company": "Atabaque",
+            "client_or_distributor": "Distribuidora X",
+            "release_or_start_date": "2026-05-01",
+            "release_type": "single",
+            "general_clearance_notes": "Precisamos de clearance completo.",
+        },
+        "tracks": [
+            {
+                "local_id": "rights-1",
+                "order_number": 1,
+                "title": "Faixa Direitos",
+                "primary_artists": "Ana",
+                "authors": "Ana",
+                "phonogram_owner": "Atabaque",
+                "has_isrc": "no",
+            }
+        ],
+        "meta": {
+            "form_version": "legacy_v1",
+        },
+    }
+
+
 def _track_row(
     *,
     track_id: str,
@@ -539,6 +578,77 @@ class SubmissionUpsertTests(unittest.TestCase):
         self.assertEqual(response["submission_id"], SUBMISSION_ID)
         self.assertEqual(len(fake_supabase.store["submissions"]), 1)
         self.assertEqual(len(fake_supabase.store["tracks"]), 2)
+
+    def test_create_submission_edit_path_does_not_call_summary_email_helper(self) -> None:
+        with (
+            patch.object(
+                submissions_module,
+                "_load_submission_by_edit_token",
+                return_value=_submission_row(payload=_release_payload(edit_token="edit-123")),
+            ),
+            patch.object(
+                submissions_module,
+                "_load_recent_idempotent_submission",
+                return_value=None,
+            ),
+            patch.object(
+                submissions_module,
+                "_update_release_submission",
+                return_value={"ok": True, "submission_id": SUBMISSION_ID},
+            ) as update_mock,
+            patch.object(
+                submissions_module,
+                "_maybe_send_submission_summary_email",
+            ) as summary_email_mock,
+        ):
+            response = submissions_module.create_submission(
+                _release_payload(edit_token="edit-123"),
+                BackgroundTasks(),
+                idempotency_key="idem-edit-1",
+            )
+
+        self.assertEqual(response["submission_id"], SUBMISSION_ID)
+        update_mock.assert_called_once()
+        summary_email_mock.assert_not_called()
+
+    def test_create_submission_replays_recent_rights_clearance_request(self) -> None:
+        existing_payload = _rights_clearance_payload()
+        existing_row = {
+            "id": "rights-sub-1",
+            "draft_token": DRAFT_TOKEN,
+            "edit_token": "rights-edit-1",
+            "client_slug": "atabaque",
+            "payload": existing_payload,
+            "email_status": "pending",
+            "airtable_sync_status": "skipped",
+            "summary_email_sent": False,
+            "created_at": "2026-04-18T12:00:00+00:00",
+            "updated_at": "2026-04-18T12:00:00+00:00",
+        }
+        fake_supabase = _FakeSupabase(
+            {
+                "submissions": [existing_row],
+                "tracks": [],
+            }
+        )
+
+        with (
+            patch.object(submissions_module, "supabase", fake_supabase),
+            patch.object(
+                submissions_module,
+                "_load_recent_idempotent_submission",
+                return_value=deepcopy(existing_row),
+            ),
+        ):
+            response = submissions_module.create_submission(
+                _rights_clearance_payload(),
+                BackgroundTasks(),
+                idempotency_key="idem-rights-1",
+            )
+
+        self.assertTrue(response["replayed"])
+        self.assertEqual(response["submission_id"], "rights-sub-1")
+        self.assertEqual(response["workflow"]["workflow_type"], "rights_clearance")
 
 
 if __name__ == "__main__":
