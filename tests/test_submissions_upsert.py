@@ -385,7 +385,23 @@ class SubmissionUpsertTests(unittest.TestCase):
             )
         )
 
-        with patch.object(submissions_module, "supabase", fake_supabase):
+        with (
+            patch.object(submissions_module, "supabase", fake_supabase),
+            patch.object(
+                submissions_module,
+                "_sync_airtable",
+                return_value={
+                    "airtable_project": {"id": "airtable-project-1"},
+                    "airtable_tracks": [
+                        {"id": "rec-2", "client_track_id": CLIENT_TRACK_ID_2},
+                        {"id": "rec-3", "client_track_id": CLIENT_TRACK_ID_3},
+                        {"id": "rec-4", "client_track_id": "new-track"},
+                    ],
+                    "focus_track_record_id": "rec-2",
+                },
+            ),
+            patch.object(submissions_module, "_update_submission_airtable_success"),
+        ):
             response = submissions_module._update_release_submission(
                 existing_row=deepcopy(fake_supabase.store["submissions"][0]),
                 payload=updated_payload,
@@ -396,6 +412,8 @@ class SubmissionUpsertTests(unittest.TestCase):
         self.assertTrue(response["ok"])
         self.assertEqual(response["submission_id"], SUBMISSION_ID)
         self.assertEqual(response["tracks_created"], 3)
+        self.assertEqual(response["sync"]["airtable"], "ok")
+        self.assertEqual(response["airtable_project_id"], "airtable-project-1")
         self.assertEqual(len(fake_supabase.store["submissions"]), 1)
         self.assertEqual(len(fake_supabase.store["tracks"]), 4)
         self.assertEqual(len(fake_supabase.store["submissions_revisions"]), 1)

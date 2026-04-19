@@ -25,8 +25,8 @@ from app.schemas.submission import (
     validate_submission_payload,
 )
 from app.services.airtable import (
-    create_airtable_project,
-    create_airtable_tracks,
+    upsert_airtable_project,
+    upsert_airtable_tracks,
     update_airtable_project_focus_track,
 )
 from app.services.email import send_edit_link_email, send_submission_summary_email
@@ -1878,6 +1878,7 @@ def _build_airtable_track_rows(
 
         rows.append(
             {
+                "client_track_id": getattr(track, "client_track_id", None),
                 "order_number": track.order_number,
                 "title": track.title,
                 "artists": track.primary_artists,
@@ -1907,6 +1908,60 @@ def _build_airtable_track_rows(
     return rows
 
 
+def _build_airtable_sync_track_rows(
+    payload: ReleaseIntakeSubmissionPayload,
+    track_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    active_airtable_rows = _build_airtable_track_rows(payload)
+    active_by_client_track_id = {
+        str(track.get("client_track_id") or "").strip(): track
+        for track in active_airtable_rows
+        if str(track.get("client_track_id") or "").strip()
+    }
+    sync_rows: List[Dict[str, Any]] = []
+
+    for track_row in track_rows:
+        client_track_id = str(track_row.get("client_track_id") or "").strip()
+        active_track = active_by_client_track_id.get(client_track_id, {})
+        sync_rows.append(
+            {
+                "id": track_row.get("id"),
+                "client_track_id": client_track_id,
+                "airtable_track_id": track_row.get("airtable_track_id"),
+                "deleted_at": track_row.get("deleted_at"),
+                "order_number": active_track.get("order_number") or track_row.get("order_number"),
+                "title": active_track.get("title") or track_row.get("title"),
+                "artists": active_track.get("artists") or track_row.get("artists"),
+                "feats": active_track.get("feats"),
+                "interpreters": active_track.get("interpreters"),
+                "authors": active_track.get("authors") or track_row.get("authors"),
+                "publishers": active_track.get("publishers"),
+                "producers_musicians": active_track.get("producers_musicians"),
+                "phonographic_producer": active_track.get("phonographic_producer"),
+                "artist_profiles_status": active_track.get("artist_profiles_status"),
+                "artist_profile_names_to_create": active_track.get(
+                    "artist_profile_names_to_create"
+                ),
+                "existing_profile_links": active_track.get("existing_profile_links"),
+                "explicit_content": active_track.get("explicit_content"),
+                "has_isrc": active_track.get("has_isrc"),
+                "isrc": active_track.get("isrc"),
+                "tiktok_snippet": active_track.get("tiktok_snippet"),
+                "audio_public_url": active_track.get("audio_public_url"),
+                "audio_path": active_track.get("audio_path"),
+                "lyrics": active_track.get("lyrics") or track_row.get("lyrics"),
+                "track_status": (
+                    "Removida"
+                    if track_row.get("deleted_at")
+                    else active_track.get("track_status")
+                ),
+                "is_focus_track": bool(active_track.get("is_focus_track")),
+            }
+        )
+
+    return sync_rows
+
+
 def _sync_airtable(
     *,
     payload: WorkflowSubmissionPayload,
@@ -1918,45 +1973,60 @@ def _sync_airtable(
             "Airtable sync for rights_clearance is not connected yet."
         )
 
-    identification = _safe_model_dump(payload.identification)
-    project = _safe_model_dump(payload.project)
-    marketing = _safe_model_dump(payload.marketing)
-    airtable_tracks_input = _build_airtable_track_rows(payload)
+    submission_row = _load_submission_row(submission_id)
+    if not submission_row:
+        raise RuntimeError(f"Submission {submission_id} not found before Airtable sync")
 
-    edit_url = _build_edit_url(edit_token, payload.workspace_slug)
+    submission_payload_data = _coerce_dict(submission_row.get("payload")) or _build_payload_dump(
+        payload
+    )
+    submission_payload = validate_submission_payload(submission_payload_data)
+    if _is_rights_clearance_payload(submission_payload):
+        raise RuntimeError(
+            "Airtable sync for rights_clearance is not connected yet."
+        )
 
-    airtable_project = create_airtable_project(
-        workspace_slug=payload.workspace_slug,
-        identification=identification,
-        project=project,
-        marketing=marketing,
-        submission_id=submission_id,
-        draft_token=_as_uuid(payload.draft_token),
-        edit_url=edit_url,
+    track_rows = _load_submission_tracks(submission_id)
+    airtable_tracks_input = _build_airtable_sync_track_rows(
+        submission_payload,
+        track_rows,
+    )
+    submission_for_airtable = dict(submission_row)
+    submission_for_airtable["payload"] = _build_payload_dump(submission_payload)
+    submission_for_airtable["edit_url"] = _build_edit_url(
+        edit_token,
+        submission_payload.workspace_slug,
     )
 
-    airtable_project_id = airtable_project["id"]
-
-    airtable_tracks = create_airtable_tracks(
-        airtable_project_id=airtable_project_id,
-        workspace_slug=payload.workspace_slug,
-        submission_id=submission_id,
-        tracks=airtable_tracks_input,
+    airtable_project = upsert_airtable_project(submission_for_airtable)
+    submission_for_airtable["airtable_project_id"] = airtable_project["id"]
+    airtable_tracks = upsert_airtable_tracks(
+        submission_for_airtable,
+        airtable_tracks_input,
     )
 
     focus_track_record_id: Optional[str] = None
-    for input_track, airtable_track in zip(airtable_tracks_input, airtable_tracks):
-        if input_track.get("is_focus_track"):
+    active_track_inputs = {
+        str(track.get("client_track_id") or "").strip(): track
+        for track in airtable_tracks_input
+        if not track.get("deleted_at")
+    }
+    active_airtable_tracks = [
+        track for track in airtable_tracks if not track.get("deleted_at")
+    ]
+    for airtable_track in active_airtable_tracks:
+        client_track_id = str(airtable_track.get("client_track_id") or "").strip()
+        if active_track_inputs.get(client_track_id, {}).get("is_focus_track"):
             focus_track_record_id = airtable_track["id"]
             break
 
-    if not focus_track_record_id and airtable_tracks:
-        focus_track_record_id = airtable_tracks[0]["id"]
+    if not focus_track_record_id and active_airtable_tracks:
+        focus_track_record_id = active_airtable_tracks[0]["id"]
 
     if focus_track_record_id:
         try:
             update_airtable_project_focus_track(
-                airtable_project_id=airtable_project_id,
+                airtable_project_id=airtable_project["id"],
                 airtable_focus_track_id=focus_track_record_id,
             )
         except Exception:
@@ -2019,13 +2089,47 @@ def _update_release_submission(
         payload=payload_dump,
     )
 
+    airtable_result: Optional[Dict[str, Any]] = None
+    airtable_error: Optional[str] = None
+    try:
+        airtable_result = _sync_airtable(
+            payload=payload,
+            submission_id=submission_id,
+            edit_token=str(existing_row.get("edit_token") or payload.edit_token or ""),
+        )
+        _update_submission_airtable_success(
+            submission_id,
+            airtable_result["airtable_project"]["id"],
+        )
+    except Exception as exc:
+        airtable_error = str(exc)
+        _update_submission_airtable_failed(submission_id, airtable_error)
+        logger.exception("Airtable sync failed during submission update")
+
     updated_row = dict(existing_row)
     updated_row.update(updated_rows[0])
-    return _build_updated_submission_response(
+    if airtable_result:
+        updated_row["airtable_project_id"] = airtable_result["airtable_project"]["id"]
+        updated_row["airtable_sync_status"] = "synced"
+    elif airtable_error:
+        updated_row["airtable_sync_status"] = "failed"
+
+    response = _build_updated_submission_response(
         submission_row=updated_row,
         payload=payload,
         tracks_created=reconcile_result["active_tracks_count"],
     )
+    if airtable_result:
+        response["airtable_project_id"] = airtable_result["airtable_project"]["id"]
+        response["airtable_tracks_created"] = len(
+            [track for track in airtable_result["airtable_tracks"] if not track.get("deleted_at")]
+        )
+        response["airtable_focus_track_id"] = airtable_result.get("focus_track_record_id")
+        response["sync"]["airtable"] = "ok"
+    if airtable_error:
+        response["airtable_error"] = airtable_error
+        response["sync"]["airtable"] = "failed"
+    return response
 
 
 @router.get("/edit/{edit_token}")
@@ -2178,11 +2282,6 @@ def create_submission(
 
             airtable_project_id = airtable_result["airtable_project"]["id"]
             _update_submission_airtable_success(submission_id, airtable_project_id)
-
-            _persist_airtable_track_ids(
-                created_tracks=created_tracks,
-                airtable_tracks=airtable_result["airtable_tracks"],
-            )
 
         except Exception as exc:
             airtable_error = str(exc)

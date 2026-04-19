@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import os
+import unittest
+from copy import deepcopy
+from types import SimpleNamespace
+from unittest.mock import patch
+
+os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
+os.environ.setdefault("SUPABASE_ANON_KEY", "anon-key")
+
+from app.services import airtable as airtable_module
+
+
+class _FakeTable:
+    def __init__(self, store: dict[str, list[dict]], name: str) -> None:
+        self.store = store
+        self.name = name
+        self._mode: str | None = None
+        self._payload: dict | None = None
+        self._filters: list[tuple[str, object]] = []
+
+    def update(self, payload: dict) -> "_FakeTable":
+        self._mode = "update"
+        self._payload = payload
+        return self
+
+    def eq(self, key: str, value: object) -> "_FakeTable":
+        self._filters.append((key, value))
+        return self
+
+    def execute(self) -> SimpleNamespace:
+        try:
+            if self._mode != "update":
+                raise AssertionError(f"Unsupported mode for fake Airtable table: {self._mode}")
+
+            updated: list[dict] = []
+            for row in self.store.setdefault(self.name, []):
+                if all(row.get(key) == value for key, value in self._filters):
+                    row.update(deepcopy(self._payload or {}))
+                    updated.append(deepcopy(row))
+            return SimpleNamespace(data=updated)
+        finally:
+            self._mode = None
+            self._payload = None
+            self._filters = []
+
+
+class _FakeSupabase:
+    def __init__(self, store: dict[str, list[dict]]) -> None:
+        self.store = deepcopy(store)
+
+    def table(self, name: str) -> _FakeTable:
+        return _FakeTable(self.store, name)
+
+
+def _submission(*, airtable_project_id: str | None = None) -> dict:
+    return {
+        "id": "sub-123",
+        "client_slug": "atabaque",
+        "airtable_project_id": airtable_project_id,
+        "payload": {
+            "workspace_slug": "atabaque",
+            "identification": {
+                "submitter_name": "Ana",
+                "submitter_email": "ana@example.com",
+                "project_title": "Projeto Teste",
+                "release_type": "single",
+            },
+            "project": {
+                "release_date": "2026-05-01",
+                "genre": "pop",
+            },
+            "marketing": {
+                "marketing_focus": "streaming",
+            },
+        },
+    }
+
+
+class AirtableUpsertTests(unittest.TestCase):
+    def test_upsert_airtable_project_uses_patch_when_record_exists(self) -> None:
+        request_calls: list[dict] = []
+
+        def request_side_effect(method: str, url: str, payload: dict | None = None, params: dict | None = None) -> dict:
+            request_calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "payload": deepcopy(payload),
+                    "params": deepcopy(params),
+                }
+            )
+            return {"id": "recProjectExisting", "fields": {}}
+
+        with (
+            patch.object(airtable_module, "_request_json", side_effect=request_side_effect),
+            patch.object(airtable_module, "_table_url", return_value="https://airtable/projects"),
+        ):
+            result = airtable_module.upsert_airtable_project(
+                _submission(airtable_project_id="recProjectExisting")
+            )
+
+        self.assertEqual(result["id"], "recProjectExisting")
+        self.assertEqual(len(request_calls), 1)
+        self.assertEqual(request_calls[0]["method"], "PATCH")
+        self.assertTrue(request_calls[0]["url"].endswith("/recProjectExisting"))
+
+    def test_upsert_airtable_project_posts_and_persists_id_when_missing(self) -> None:
+        fake_supabase = _FakeSupabase({"submissions": [{"id": "sub-123"}]})
+        request_calls: list[dict] = []
+
+        def request_side_effect(method: str, url: str, payload: dict | None = None, params: dict | None = None) -> dict:
+            request_calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "payload": deepcopy(payload),
+                }
+            )
+            return {"records": [{"id": "recProjectNew", "fields": {}}]}
+
+        submission = _submission()
+
+        with (
+            patch.object(airtable_module, "supabase", fake_supabase),
+            patch.object(airtable_module, "_request_json", side_effect=request_side_effect),
+            patch.object(airtable_module, "_table_url", return_value="https://airtable/projects"),
+        ):
+            result = airtable_module.upsert_airtable_project(submission)
+
+        self.assertEqual(result["id"], "recProjectNew")
+        self.assertEqual(request_calls[0]["method"], "POST")
+        self.assertEqual(
+            fake_supabase.store["submissions"][0]["airtable_project_id"],
+            "recProjectNew",
+        )
+        self.assertEqual(submission["airtable_project_id"], "recProjectNew")
+
+    def test_upsert_airtable_tracks_posts_new_patches_existing_and_marks_removed(self) -> None:
+        fake_supabase = _FakeSupabase(
+            {
+                "tracks": [
+                    {"id": "track-existing", "airtable_track_id": "recTrackExisting"},
+                    {"id": "track-new", "airtable_track_id": None},
+                    {"id": "track-removed", "airtable_track_id": "recTrackRemoved"},
+                ]
+            }
+        )
+        request_calls: list[dict] = []
+
+        def request_side_effect(method: str, url: str, payload: dict | None = None, params: dict | None = None) -> dict:
+            request_calls.append(
+                {
+                    "method": method,
+                    "url": url,
+                    "payload": deepcopy(payload),
+                    "params": deepcopy(params),
+                }
+            )
+            if method == "POST":
+                return {
+                    "records": [
+                        {
+                            "id": "recTrackNew",
+                            "fields": {
+                                "Projeto": ["recProject"],
+                                "Ordem da Faixa": 2,
+                            },
+                        }
+                    ]
+                }
+            if url.endswith("/recTrackExisting"):
+                return {"id": "recTrackExisting", "fields": {"Ordem da Faixa": 1}}
+            if url.endswith("/recTrackRemoved"):
+                return {"id": "recTrackRemoved", "fields": {"Status da Faixa": "Removida"}}
+            raise AssertionError(f"Unexpected Airtable request: {method} {url}")
+
+        submission = _submission(airtable_project_id="recProject")
+        tracks = [
+            {
+                "id": "track-existing",
+                "client_track_id": "ct-existing",
+                "airtable_track_id": "recTrackExisting",
+                "deleted_at": None,
+                "order_number": 1,
+                "title": "Faixa A",
+                "artists": "Ana",
+                "authors": "Ana",
+                "lyrics": "Letra A",
+            },
+            {
+                "id": "track-new",
+                "client_track_id": "ct-new",
+                "airtable_track_id": None,
+                "deleted_at": None,
+                "order_number": 2,
+                "title": "Faixa B",
+                "artists": "Ana",
+                "authors": "Ana",
+                "lyrics": "Letra B",
+            },
+            {
+                "id": "track-removed",
+                "client_track_id": "ct-removed",
+                "airtable_track_id": "recTrackRemoved",
+                "deleted_at": "2026-04-18T12:00:00+00:00",
+                "order_number": 3,
+                "title": "Faixa C",
+                "artists": "Ana",
+                "authors": "Ana",
+                "lyrics": "Letra C",
+            },
+        ]
+
+        with (
+            patch.object(airtable_module, "supabase", fake_supabase),
+            patch.object(airtable_module, "_request_json", side_effect=request_side_effect),
+            patch.object(airtable_module, "_table_url", side_effect=lambda table_name: f"https://airtable/{table_name}"),
+            patch.object(airtable_module, "_tracks_table_name", return_value="tracks"),
+            patch.object(airtable_module, "_track_project_link_field", return_value="Projeto"),
+            patch.object(airtable_module, "_track_status_field", return_value="Status da Faixa"),
+        ):
+            result = airtable_module.upsert_airtable_tracks(submission, tracks)
+
+        methods = [call["method"] for call in request_calls]
+        self.assertEqual(methods.count("POST"), 1)
+        self.assertEqual(methods.count("PATCH"), 2)
+        self.assertEqual(fake_supabase.store["tracks"][1]["airtable_track_id"], "recTrackNew")
+        self.assertEqual(len(result), 3)
+
+        removed_call = next(call for call in request_calls if call["url"].endswith("/recTrackRemoved"))
+        self.assertEqual(
+            removed_call["payload"]["fields"]["Status da Faixa"],
+            "Removida",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
