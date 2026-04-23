@@ -1138,6 +1138,7 @@ def _build_submission_row(
             "payload": payload.model_dump() if hasattr(payload, "model_dump") else {},
             "airtable_sync_status": "skipped",
             "email_status": "pending",
+            "idempotency_key": idempotency_key,
         }
 
     identification = payload.identification
@@ -2209,16 +2210,16 @@ def create_submission(
                 idempotency_key=clean_idempotency_key,
             )
 
-        replay_row = _load_recent_idempotent_submission(
-            idempotency_key=clean_idempotency_key,
-            reference=reference_time,
-            draft_token=validated_payload.draft_token,
+    replay_row = _load_recent_idempotent_submission(
+        idempotency_key=clean_idempotency_key,
+        reference=reference_time,
+        draft_token=validated_payload.draft_token,
+    )
+    if replay_row:
+        return _build_submission_replay_response(
+            replay_row,
+            message="Submission already processed recently.",
         )
-        if replay_row:
-            return _build_submission_replay_response(
-                replay_row,
-                message="Submission already processed recently.",
-            )
 
     now_iso = _utc_now_iso()
     submission_id = str(uuid4())
