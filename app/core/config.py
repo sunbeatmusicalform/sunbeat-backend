@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     AIRTABLE_PROJECTS_TABLE: str = Field(default="[V2] Projetos Musicais")
     AIRTABLE_TRACKS_TABLE: str = Field(default="[V2] Faixas Musicais")
     AIRTABLE_TRACK_PROJECT_LINK_FIELD: str = Field(default="Projeto")
+    AIRTABLE_TRACK_STATUS_FIELD: str = Field(default="Status da Faixa")
 
     AIRTABLE_CLIENTS_TABLE: str = Field(default="[V2] Clientes")
     AIRTABLE_CLIENT_NAME_FIELD: str = Field(default="Clientes")
