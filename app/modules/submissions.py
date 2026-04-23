@@ -72,7 +72,10 @@ def _run_google_drive_sync_task(
     submission_id: str,
 ) -> None:
     try:
-        drive_result = sync_submission_to_google_drive(payload)
+        drive_result = sync_submission_to_google_drive(
+            payload,
+            submission_id=submission_id,
+        )
     except Exception:
         logger.exception(
             "Google Drive background sync raised unexpectedly submission_id=%s",
