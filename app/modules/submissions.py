@@ -4,11 +4,11 @@ import inspect
 import logging
 import json
 import secrets
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 
 from app.core.config import settings
 from app.core.database import supabase
@@ -38,6 +38,7 @@ router = APIRouter(prefix="/submissions", tags=["Submissions"])
 
 EMAIL_SETTINGS_STEP_KEY = "__workspace_settings__"
 EMAIL_SETTINGS_FIELD_KEY = "submission_notification_emails"
+IDEMPOTENCY_WINDOW = timedelta(minutes=10)
 
 
 def _utc_now_iso() -> str:
@@ -445,6 +446,610 @@ def _load_submission_row(submission_id: str) -> Dict[str, Any] | None:
     return result.data[0] if result.data else None
 
 
+def _load_submission_by_edit_token(edit_token: str) -> Dict[str, Any] | None:
+    result = (
+        supabase.table("submissions")
+        .select("*")
+        .eq("edit_token", edit_token)
+        .limit(1)
+        .execute()
+    )
+    return result.data[0] if result.data else None
+
+
+def _load_submission_tracks(submission_id: str) -> List[Dict[str, Any]]:
+    result = (
+        supabase.table("tracks")
+        .select("*")
+        .eq("submission_id", submission_id)
+        .execute()
+    )
+    rows = getattr(result, "data", None) or []
+    return sorted(
+        rows,
+        key=lambda row: (
+            int(row.get("order_number") or 0),
+            str(row.get("created_at") or ""),
+            str(row.get("id") or ""),
+        ),
+    )
+
+
+def _clean_idempotency_key(value: str | None) -> str | None:
+    text = str(value or "").strip()
+    return text or None
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(timezone.utc)
+
+
+def _is_within_idempotency_window(
+    value: Any,
+    *,
+    reference: datetime,
+) -> bool:
+    parsed = _parse_iso_datetime(value)
+    if parsed is None:
+        return False
+    return reference - parsed <= IDEMPOTENCY_WINDOW
+
+
+def _load_recent_idempotent_submission(
+    *,
+    idempotency_key: str | None,
+    reference: datetime,
+    submission_id: str | None = None,
+    edit_token: str | None = None,
+    draft_token: str | None = None,
+) -> Dict[str, Any] | None:
+    clean_key = _clean_idempotency_key(idempotency_key)
+    if not clean_key:
+        return None
+
+    result = (
+        supabase.table("submissions")
+        .select("*")
+        .eq("idempotency_key", clean_key)
+        .execute()
+    )
+
+    rows = getattr(result, "data", None) or []
+    rows = sorted(
+        rows,
+        key=lambda row: (
+            _parse_iso_datetime(row.get("updated_at") or row.get("created_at"))
+            or datetime.min.replace(tzinfo=timezone.utc)
+        ),
+        reverse=True,
+    )
+
+    for row in rows:
+        if submission_id and row.get("id") != submission_id:
+            continue
+        if edit_token and row.get("edit_token") != edit_token:
+            continue
+        if draft_token and _as_uuid(row.get("draft_token")) != _as_uuid(draft_token):
+            continue
+        if _is_within_idempotency_window(
+            row.get("updated_at") or row.get("created_at"),
+            reference=reference,
+        ):
+            return row
+
+    return None
+
+
+def _count_active_tracks(track_rows: List[Dict[str, Any]]) -> int:
+    return sum(1 for row in track_rows if not row.get("deleted_at"))
+
+
+def _response_notification_email_status(row: Dict[str, Any]) -> str:
+    if row.get("summary_email_sent"):
+        return "already_sent"
+    return "skipped"
+
+
+def _build_submission_replay_response(
+    row: Dict[str, Any],
+    *,
+    message: str,
+) -> Dict[str, Any]:
+    workflow_identity = _workflow_identity_from_row(row)
+    track_rows = _load_submission_tracks(str(row.get("id") or ""))
+
+    response: Dict[str, Any] = {
+        "ok": True,
+        "submission_id": row.get("id"),
+        "draft_token": row.get("draft_token"),
+        "edit_token": row.get("edit_token"),
+        "tracks_created": _count_active_tracks(track_rows),
+        "message": message,
+        "workflow": {
+            "workspace_slug": workflow_identity["workspace_slug"],
+            "workflow_type": workflow_identity["workflow_type"],
+            "form_version": workflow_identity["form_version"],
+        },
+        "sync": {
+            "supabase": "ok",
+            "airtable": row.get("airtable_sync_status") or "pending",
+            "email": row.get("email_status") or "pending",
+            "notification_email": _response_notification_email_status(row),
+        },
+        "replayed": True,
+    }
+
+    if row.get("airtable_project_id"):
+        response["airtable_project_id"] = row.get("airtable_project_id")
+
+    if row.get("summary_email_message_id"):
+        response["notification_email_message_id"] = row.get(
+            "summary_email_message_id"
+        )
+
+    return response
+
+
+def _workflow_identity_from_row(row: Dict[str, Any]) -> Dict[str, str]:
+    payload = _coerce_dict(row.get("payload"))
+    meta = _coerce_dict(payload.get("meta"))
+    return resolve_workflow_identity(
+        workspace_slug=payload.get("workspace_slug") or row.get("client_slug") or "atabaque",
+        workflow_type=payload.get("workflow_type"),
+        form_version=meta.get("form_version"),
+    )
+
+
+def _build_payload_dump(payload: WorkflowSubmissionPayload) -> Dict[str, Any]:
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump()
+    return _safe_model_dump(payload)
+
+
+def _build_release_track_payloads(
+    payload: ReleaseIntakeSubmissionPayload,
+    *,
+    generate_client_track_ids: bool = True,
+) -> List[Dict[str, Any]]:
+    track_payloads: List[Dict[str, Any]] = []
+
+    for index, track in enumerate(payload.tracks, start=1):
+        track_payload = _safe_model_dump(track)
+        track_payload["order_number"] = track_payload.get("order_number") or index
+        if generate_client_track_ids and not str(
+            track_payload.get("client_track_id") or ""
+        ).strip():
+            track_payload["client_track_id"] = str(uuid4())
+        if not str(track_payload.get("local_id") or "").strip():
+            track_payload["local_id"] = track_payload.get("client_track_id") or str(
+                uuid4()
+            )
+        track_payloads.append(track_payload)
+
+    return track_payloads
+
+
+def _build_release_payload_dump(
+    payload: ReleaseIntakeSubmissionPayload,
+    track_payloads: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload_dump = _build_payload_dump(payload)
+    payload_dump["tracks"] = track_payloads
+    return payload_dump
+
+
+def _build_release_track_row(
+    *,
+    submission_id: str,
+    draft_token: str | None,
+    now_iso: str,
+    track_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    return {
+        "submission_id": submission_id,
+        "draft_token": draft_token,
+        "client_track_id": track_payload.get("client_track_id"),
+        "order_number": track_payload.get("order_number"),
+        "title": track_payload.get("title"),
+        "artists": track_payload.get("primary_artists"),
+        "authors": track_payload.get("authors"),
+        "lyrics": track_payload.get("lyrics"),
+        "explicit": _bool_from_yes_no(track_payload.get("explicit_content")),
+        "deleted_at": None,
+        "created_at": now_iso,
+    }
+
+
+def _build_submission_update_row(
+    *,
+    existing_row: Dict[str, Any],
+    payload: ReleaseIntakeSubmissionPayload,
+    payload_dump: Dict[str, Any],
+    now_iso: str,
+    idempotency_key: str | None,
+) -> Dict[str, Any]:
+    identification = payload.identification
+    project = payload.project
+    marketing = payload.marketing
+
+    return {
+        "updated_at": now_iso,
+        "version": int(existing_row.get("version") or 1) + 1,
+        "is_update": True,
+        "client_slug": payload.workspace_slug,
+        "email": identification.submitter_email,
+        "artist_name": identification.submitter_name,
+        "release_type": identification.release_type,
+        "release_title": identification.project_title,
+        "main_title": identification.project_title,
+        "track_title": _get_focus_track_name(payload),
+        "genre": project.genre,
+        "release_date": project.release_date,
+        "cover_url": getattr(getattr(project, "cover_file", None), "public_url", None)
+        or getattr(project, "cover_link", None),
+        "cover_path": getattr(getattr(project, "cover_file", None), "storage_path", None),
+        "marketing_json": payload_dump.get("marketing") or _safe_model_dump(marketing),
+        "tracks_json": payload_dump.get("tracks") or [],
+        "payload": payload_dump,
+        "idempotency_key": idempotency_key,
+    }
+
+
+def _insert_submission_revision(
+    *,
+    submission_id: str,
+    version: int,
+    payload: Dict[str, Any],
+) -> None:
+    supabase.table("submissions_revisions").insert(
+        {
+            "id": str(uuid4()),
+            "submission_id": submission_id,
+            "version": version,
+            "payload": payload,
+        }
+    ).execute()
+
+
+def _sorted_track_rows(track_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(
+        track_rows,
+        key=lambda row: (
+            bool(row.get("deleted_at")),
+            int(row.get("order_number") or 0),
+            str(row.get("created_at") or ""),
+            str(row.get("id") or ""),
+        ),
+    )
+
+
+def _normalize_track_match_text(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _ensure_track_rows_have_client_track_ids(
+    track_rows: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    for row in track_rows:
+        if str(row.get("client_track_id") or "").strip():
+            continue
+
+        client_track_id = str(uuid4())
+        supabase.table("tracks").update(
+            {
+                "client_track_id": client_track_id,
+            }
+        ).eq("id", row["id"]).execute()
+        row["client_track_id"] = client_track_id
+
+    return track_rows
+
+
+def _match_existing_track_row(
+    track_payload: Dict[str, Any],
+    track_rows: List[Dict[str, Any]],
+    *,
+    used_client_track_ids: set[str],
+) -> Dict[str, Any] | None:
+    title = _normalize_track_match_text(track_payload.get("title"))
+    order_number = int(track_payload.get("order_number") or 0)
+
+    def _is_available(row: Dict[str, Any]) -> bool:
+        client_track_id = str(row.get("client_track_id") or "").strip()
+        return bool(client_track_id and client_track_id not in used_client_track_ids)
+
+    matchers = [
+        lambda row: _is_available(row)
+        and int(row.get("order_number") or 0) == order_number
+        and _normalize_track_match_text(row.get("title")) == title,
+        lambda row: _is_available(row)
+        and _normalize_track_match_text(row.get("title")) == title,
+        lambda row: _is_available(row)
+        and int(row.get("order_number") or 0) == order_number,
+    ]
+
+    for matcher in matchers:
+        for row in track_rows:
+            if matcher(row):
+                return row
+
+    return None
+
+
+def _prepare_release_track_payloads_for_update(
+    payload: ReleaseIntakeSubmissionPayload,
+    existing_track_rows: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    hydrated_track_rows = _ensure_track_rows_have_client_track_ids(existing_track_rows)
+    candidate_rows = _sorted_track_rows(hydrated_track_rows)
+    existing_client_track_ids = {
+        str(row.get("client_track_id") or "").strip()
+        for row in hydrated_track_rows
+        if str(row.get("client_track_id") or "").strip()
+    }
+    used_client_track_ids: set[str] = set()
+    prepared_track_payloads: List[Dict[str, Any]] = []
+
+    for track_payload in _build_release_track_payloads(
+        payload,
+        generate_client_track_ids=False,
+    ):
+        client_track_id = str(track_payload.get("client_track_id") or "").strip()
+        if not client_track_id:
+            matched_row = _match_existing_track_row(
+                track_payload,
+                candidate_rows,
+                used_client_track_ids=used_client_track_ids,
+            )
+            if matched_row:
+                client_track_id = str(matched_row["client_track_id"])
+            else:
+                client_track_id = str(uuid4())
+
+        track_payload["client_track_id"] = client_track_id
+        if not str(track_payload.get("local_id") or "").strip():
+            track_payload["local_id"] = client_track_id
+
+        if client_track_id in existing_client_track_ids:
+            used_client_track_ids.add(client_track_id)
+
+        prepared_track_payloads.append(track_payload)
+
+    return prepared_track_payloads, hydrated_track_rows
+
+
+def _build_release_track_update_row(
+    *,
+    draft_token: str | None,
+    track_payload: Dict[str, Any],
+    deleted_at: str | None = None,
+) -> Dict[str, Any]:
+    return {
+        "draft_token": draft_token,
+        "client_track_id": track_payload.get("client_track_id"),
+        "order_number": track_payload.get("order_number"),
+        "title": track_payload.get("title"),
+        "artists": track_payload.get("primary_artists"),
+        "authors": track_payload.get("authors"),
+        "lyrics": track_payload.get("lyrics"),
+        "explicit": _bool_from_yes_no(track_payload.get("explicit_content")),
+        "deleted_at": deleted_at,
+    }
+
+
+def _reconcile_release_tracks(
+    *,
+    submission_id: str,
+    draft_token: str | None,
+    track_payloads: List[Dict[str, Any]],
+    existing_track_rows: List[Dict[str, Any]],
+    now_iso: str,
+) -> Dict[str, Any]:
+    hydrated_track_rows = _ensure_track_rows_have_client_track_ids(existing_track_rows)
+    existing_by_client_track_id = {
+        str(row.get("client_track_id") or ""): row
+        for row in hydrated_track_rows
+        if str(row.get("client_track_id") or "").strip()
+    }
+    seen_client_track_ids: set[str] = set()
+    inserted_tracks: List[Dict[str, Any]] = []
+
+    for track_payload in track_payloads:
+        client_track_id = str(track_payload.get("client_track_id") or "").strip()
+        if not client_track_id:
+            client_track_id = str(uuid4())
+            track_payload["client_track_id"] = client_track_id
+
+        seen_client_track_ids.add(client_track_id)
+        existing_row = existing_by_client_track_id.get(client_track_id)
+
+        if existing_row:
+            update_row = _build_release_track_update_row(
+                draft_token=draft_token,
+                track_payload=track_payload,
+                deleted_at=None,
+            )
+            supabase.table("tracks").update(update_row).eq("id", existing_row["id"]).execute()
+            existing_row.update(update_row)
+            continue
+
+        insert_row = _build_release_track_row(
+            submission_id=submission_id,
+            draft_token=draft_token,
+            now_iso=now_iso,
+            track_payload=track_payload,
+        )
+        insert_result = supabase.table("tracks").insert(insert_row).execute()
+        created_rows = getattr(insert_result, "data", None) or [insert_row]
+        created_row = created_rows[0]
+        inserted_tracks.append(created_row)
+        existing_by_client_track_id[client_track_id] = created_row
+
+    for existing_row in hydrated_track_rows:
+        client_track_id = str(existing_row.get("client_track_id") or "").strip()
+        if not client_track_id or client_track_id in seen_client_track_ids:
+            continue
+        if existing_row.get("deleted_at"):
+            continue
+
+        supabase.table("tracks").update(
+            {
+                "deleted_at": now_iso,
+            }
+        ).eq("id", existing_row["id"]).execute()
+        existing_row["deleted_at"] = now_iso
+
+    return {
+        "inserted_tracks": inserted_tracks,
+        "active_tracks_count": len(track_payloads),
+    }
+
+
+def _apply_track_client_ids_to_payload_tracks(
+    track_payloads: List[Dict[str, Any]],
+    track_rows: List[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], bool]:
+    active_track_rows = [
+        row for row in _sorted_track_rows(track_rows) if not row.get("deleted_at")
+    ]
+    rows_by_client_track_id = {
+        str(row.get("client_track_id") or "").strip(): row
+        for row in active_track_rows
+        if str(row.get("client_track_id") or "").strip()
+    }
+    used_row_ids: set[str] = set()
+    changed = False
+    normalized_tracks: List[Dict[str, Any]] = []
+
+    for track_payload in track_payloads:
+        normalized_track = dict(track_payload)
+        client_track_id = str(normalized_track.get("client_track_id") or "").strip()
+        matched_row: Dict[str, Any] | None = None
+
+        if client_track_id:
+            matched_row = rows_by_client_track_id.get(client_track_id)
+        else:
+            matched_row = _match_existing_track_row(
+                normalized_track,
+                active_track_rows,
+                used_client_track_ids=used_row_ids,
+            )
+            if matched_row:
+                client_track_id = str(matched_row["client_track_id"])
+                normalized_track["client_track_id"] = client_track_id
+                changed = True
+
+        if matched_row and not str(normalized_track.get("local_id") or "").strip():
+            normalized_track["local_id"] = client_track_id
+            changed = True
+
+        if matched_row:
+            used_row_ids.add(str(matched_row["client_track_id"]))
+
+        normalized_tracks.append(normalized_track)
+
+    return normalized_tracks, changed
+
+
+def _persist_release_track_ids_on_submission(
+    row: Dict[str, Any],
+    track_rows: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    payload = _coerce_dict(row.get("payload"))
+    payload_tracks = _coerce_list(payload.get("tracks")) or _coerce_list(row.get("tracks_json"))
+    if not payload_tracks:
+        return row
+
+    normalized_tracks, changed = _apply_track_client_ids_to_payload_tracks(
+        payload_tracks,
+        track_rows,
+    )
+    if not changed:
+        return row
+
+    update_row: Dict[str, Any] = {
+        "tracks_json": normalized_tracks,
+    }
+
+    if payload:
+        payload["tracks"] = normalized_tracks
+        update_row["payload"] = payload
+
+    update_result = (
+        supabase.table("submissions")
+        .update(update_row)
+        .eq("id", row["id"])
+        .execute()
+    )
+    updated_rows = getattr(update_result, "data", None) or []
+    if updated_rows:
+        updated_row = dict(row)
+        updated_row.update(updated_rows[0])
+        return updated_row
+
+    updated_row = dict(row)
+    updated_row.update(update_row)
+    return updated_row
+
+
+def _with_release_track_client_ids(
+    data: Dict[str, Any],
+    track_rows: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if data.get("workflow_type") == RIGHTS_CLEARANCE_WORKFLOW_TYPE:
+        return data
+
+    normalized_tracks, _changed = _apply_track_client_ids_to_payload_tracks(
+        _coerce_list(data.get("tracks")),
+        track_rows,
+    )
+    updated_data = dict(data)
+    updated_data["tracks"] = normalized_tracks
+    return updated_data
+
+
+def _build_updated_submission_response(
+    *,
+    submission_row: Dict[str, Any],
+    payload: ReleaseIntakeSubmissionPayload,
+    tracks_created: int,
+) -> Dict[str, Any]:
+    return {
+        "ok": True,
+        "submission_id": submission_row.get("id"),
+        "draft_token": submission_row.get("draft_token"),
+        "edit_token": submission_row.get("edit_token"),
+        "tracks_created": tracks_created,
+        "message": "Submission updated successfully.",
+        "workflow": {
+            "workspace_slug": payload.workspace_slug,
+            "workflow_type": _submission_workflow_type(payload),
+            "form_version": _submission_form_version(payload),
+        },
+        "sync": {
+            "supabase": "ok",
+            "airtable": submission_row.get("airtable_sync_status") or "pending",
+            "email": "skipped",
+            "notification_email": _response_notification_email_status(submission_row),
+        },
+    }
+
+
 def _persist_airtable_track_ids(
     *,
     created_tracks: List[Dict[str, Any]],
@@ -481,6 +1086,8 @@ def _build_submission_row(
     submission_id: str,
     edit_token: str,
     now_iso: str,
+    prepared_track_payloads: Optional[List[Dict[str, Any]]] = None,
+    idempotency_key: str | None = None,
 ) -> Dict[str, Any]:
     if _is_rights_clearance_payload(payload):
         requester = payload.requester_identification
@@ -558,11 +1165,21 @@ def _build_submission_row(
         "cover_url": getattr(getattr(project, "cover_file", None), "public_url", None)
         or getattr(project, "cover_link", None),
         "cover_path": getattr(getattr(project, "cover_file", None), "storage_path", None),
-        "marketing_json": _safe_model_dump(marketing),
-        "tracks_json": [_safe_model_dump(track) for track in payload.tracks],
-        "payload": payload.model_dump() if hasattr(payload, "model_dump") else {},
+        "marketing_json": (
+            _build_release_payload_dump(
+                payload,
+                prepared_track_payloads or _build_release_track_payloads(payload),
+            ).get("marketing")
+            or _safe_model_dump(marketing)
+        ),
+        "tracks_json": prepared_track_payloads or _build_release_track_payloads(payload),
+        "payload": _build_release_payload_dump(
+            payload,
+            prepared_track_payloads or _build_release_track_payloads(payload),
+        ),
         "airtable_sync_status": "pending",
         "email_status": "pending",
+        "idempotency_key": idempotency_key,
     }
 
 
@@ -1202,6 +1819,7 @@ def _build_track_rows(
     payload: WorkflowSubmissionPayload,
     submission_id: str,
     now_iso: str,
+    prepared_track_payloads: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     if _is_rights_clearance_payload(payload):
         if getattr(payload.request_type, "clearance_format", "") != "music_release_clearance_intake":
@@ -1228,19 +1846,14 @@ def _build_track_rows(
 
     rows: List[Dict[str, Any]] = []
 
-    for track in payload.tracks:
+    for track_payload in prepared_track_payloads or _build_release_track_payloads(payload):
         rows.append(
-            {
-                "submission_id": submission_id,
-                "draft_token": _as_uuid(payload.draft_token),
-                "order_number": track.order_number,
-                "title": track.title,
-                "artists": track.primary_artists,
-                "authors": track.authors,
-                "lyrics": track.lyrics,
-                "explicit": _bool_from_yes_no(track.explicit_content),
-                "created_at": now_iso,
-            }
+            _build_release_track_row(
+                submission_id=submission_id,
+                draft_token=_as_uuid(payload.draft_token),
+                now_iso=now_iso,
+                track_payload=track_payload,
+            )
         )
 
     return rows
@@ -1356,20 +1969,71 @@ def _sync_airtable(
     }
 
 
-@router.get("/edit/{edit_token}")
-async def load_edit_submission(edit_token: str):
-    result = (
-        supabase
-        .table("submissions")
-        .select("*")
-        .eq("edit_token", edit_token)
-        .execute()
+def _update_release_submission(
+    *,
+    existing_row: Dict[str, Any],
+    payload: ReleaseIntakeSubmissionPayload,
+    now_iso: str,
+    idempotency_key: str | None,
+) -> Dict[str, Any]:
+    submission_id = str(existing_row["id"])
+    existing_version = int(existing_row.get("version") or 1)
+    existing_track_rows = _load_submission_tracks(submission_id)
+    prepared_track_payloads, hydrated_track_rows = _prepare_release_track_payloads_for_update(
+        payload,
+        existing_track_rows,
+    )
+    payload_dump = _build_release_payload_dump(payload, prepared_track_payloads)
+    update_row = _build_submission_update_row(
+        existing_row=existing_row,
+        payload=payload,
+        payload_dump=payload_dump,
+        now_iso=now_iso,
+        idempotency_key=idempotency_key,
     )
 
-    if not result.data:
+    update_result = (
+        supabase.table("submissions")
+        .update(update_row)
+        .eq("id", submission_id)
+        .eq("version", existing_version)
+        .execute()
+    )
+    updated_rows = getattr(update_result, "data", None) or []
+    if not updated_rows:
+        raise HTTPException(
+            status_code=409,
+            detail="Submission was updated by another request. Please reload and try again.",
+        )
+
+    reconcile_result = _reconcile_release_tracks(
+        submission_id=submission_id,
+        draft_token=_as_uuid(existing_row.get("draft_token") or payload.draft_token),
+        track_payloads=prepared_track_payloads,
+        existing_track_rows=hydrated_track_rows,
+        now_iso=now_iso,
+    )
+    _insert_submission_revision(
+        submission_id=submission_id,
+        version=int(update_row["version"]),
+        payload=payload_dump,
+    )
+
+    updated_row = dict(existing_row)
+    updated_row.update(updated_rows[0])
+    return _build_updated_submission_response(
+        submission_row=updated_row,
+        payload=payload,
+        tracks_created=reconcile_result["active_tracks_count"],
+    )
+
+
+@router.get("/edit/{edit_token}")
+async def load_edit_submission(edit_token: str):
+    row = _load_submission_by_edit_token(edit_token)
+    if not row:
         raise HTTPException(status_code=404, detail="Submission not found")
 
-    row = result.data[0]
     logger.info(
         "Loading edit submission: edit_token=%s submission_id=%s payload_type=%s marketing_json_type=%s tracks_json_type=%s",
         edit_token,
@@ -1378,9 +2042,19 @@ async def load_edit_submission(edit_token: str):
         type(row.get("marketing_json")).__name__,
         type(row.get("tracks_json")).__name__,
     )
+    workflow_identity = _workflow_identity_from_row(row)
+    track_rows = _load_submission_tracks(str(row.get("id") or ""))
+    if track_rows and workflow_identity["workflow_type"] != RIGHTS_CLEARANCE_WORKFLOW_TYPE:
+        track_rows = _ensure_track_rows_have_client_track_ids(track_rows)
+        row = _persist_release_track_ids_on_submission(row, track_rows)
+
+    normalized_data = _normalize_edit_submission_data(row)
+    if track_rows:
+        normalized_data = _with_release_track_client_ids(normalized_data, track_rows)
+
     return {
         "ok": True,
-        "data": _normalize_edit_submission_data(row),
+        "data": normalized_data,
     }
 
 
@@ -1388,8 +2062,10 @@ async def load_edit_submission(edit_token: str):
 def create_submission(
     payload: Dict[str, Any],
     background_tasks: BackgroundTasks,
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Dict[str, Any]:
     validated_payload = validate_submission_payload(payload)
+    clean_idempotency_key = _clean_idempotency_key(idempotency_key)
 
     logger.info(
         "Creating submission workspace_slug=%s workflow_type=%s form_version=%s",
@@ -1398,15 +2074,61 @@ def create_submission(
         _submission_form_version(validated_payload),
     )
 
+    reference_time = datetime.now(timezone.utc)
+
+    if _is_release_intake_payload(validated_payload):
+        edit_token = str(validated_payload.edit_token or "").strip() or None
+        if edit_token:
+            existing_row = _load_submission_by_edit_token(edit_token)
+            if not existing_row:
+                raise HTTPException(status_code=404, detail="Submission not found")
+
+            replay_row = _load_recent_idempotent_submission(
+                idempotency_key=clean_idempotency_key,
+                reference=reference_time,
+                submission_id=str(existing_row["id"]),
+                edit_token=edit_token,
+            )
+            if replay_row:
+                return _build_submission_replay_response(
+                    replay_row,
+                    message="Submission already processed recently.",
+                )
+
+            return _update_release_submission(
+                existing_row=existing_row,
+                payload=validated_payload,
+                now_iso=_utc_now_iso(),
+                idempotency_key=clean_idempotency_key,
+            )
+
+        replay_row = _load_recent_idempotent_submission(
+            idempotency_key=clean_idempotency_key,
+            reference=reference_time,
+            draft_token=validated_payload.draft_token,
+        )
+        if replay_row:
+            return _build_submission_replay_response(
+                replay_row,
+                message="Submission already processed recently.",
+            )
+
     now_iso = _utc_now_iso()
     submission_id = str(uuid4())
     edit_token = _generate_edit_token()
+    prepared_track_payloads = (
+        _build_release_track_payloads(validated_payload)
+        if _is_release_intake_payload(validated_payload)
+        else None
+    )
 
     submission_row = _build_submission_row(
         payload=validated_payload,
         submission_id=submission_id,
         edit_token=edit_token,
         now_iso=now_iso,
+        prepared_track_payloads=prepared_track_payloads,
+        idempotency_key=clean_idempotency_key,
     )
 
     try:
@@ -1421,6 +2143,7 @@ def create_submission(
         payload=validated_payload,
         submission_id=submission_id,
         now_iso=now_iso,
+        prepared_track_payloads=prepared_track_payloads,
     )
 
     created_tracks: List[Dict[str, Any]] = []
@@ -1435,6 +2158,11 @@ def create_submission(
                 detail=f"Submission created but failed to create tracks: {exc}",
             )
 
+    _insert_submission_revision(
+        submission_id=submission_id,
+        version=1,
+        payload=submission_row["payload"],
+    )
     _mark_draft_as_submitted(_as_uuid(validated_payload.draft_token))
 
     airtable_result: Optional[Dict[str, Any]] = None
