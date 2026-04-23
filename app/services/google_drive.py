@@ -447,32 +447,9 @@ def _resolve_parent_folder(service: Any, payload: Any) -> Tuple[str, Dict[str, A
             drive_link_folder_id,
         )
 
-        if projects_folder_id:
-            cached_projects_folder = _get_folder_by_id(service, projects_folder_id)
-            if cached_projects_folder:
-                logger.info(
-                    "Google Drive projects folder cache hit: client_name=%s projects_folder_id=%s",
-                    matching["client_name"],
-                    projects_folder_id,
-                )
-                return cached_projects_folder["id"], {
-                    "strategy": "airtable_existing_projects_folder",
-                    "record_id": record["id"],
-                    "client_name": matching["client_name"],
-                    "label_name": matching["label_name"],
-                    "artist_folder_id": effective_artist_folder_id,
-                    "projects_folder_id": cached_projects_folder["id"],
-                    "projects_folder_created": False,
-                    "updated_airtable": False,
-                }
-
-            logger.warning(
-                "Google Drive projects folder cache miss; falling back to artist folder: client_name=%s cached_projects_folder_id=%s artist_folder_id=%s",
-                matching["client_name"],
-                projects_folder_id,
-                effective_artist_folder_id,
-            )
-
+        # The artist folder is the source of truth.
+        # projects_folder_id from Airtable is treated as a cache only — never as a routing decision.
+        # We always anchor to Clientes/{Artista}/Projetos and correct the cache when it is stale.
         artist_folder = _get_folder_by_id(service, effective_artist_folder_id)
         if artist_folder:
             logger.info(
@@ -485,8 +462,19 @@ def _resolve_parent_folder(service: Any, payload: Any) -> Tuple[str, Dict[str, A
                 parent_id=artist_folder["id"],
                 name=_PROJECTS_FOLDER_NAME,
             )
+
+            # Validate cache: if the stored projects_folder_id does not match the real
+            # Projetos folder inside the artist, overwrite it so future runs are correct.
             should_update_airtable = projetos_folder["id"] != projects_folder_id
             if should_update_airtable:
+                if projects_folder_id:
+                    logger.warning(
+                        "Google Drive projects folder cache was stale; correcting: "
+                        "client_name=%s old_cached_id=%s correct_id=%s",
+                        matching["client_name"],
+                        projects_folder_id,
+                        projetos_folder["id"],
+                    )
                 _airtable_update_record(
                     record["id"],
                     {settings.AIRTABLE_CLIENT_PROJECTS_FOLDER_ID_FIELD: projetos_folder["id"]},
@@ -507,7 +495,9 @@ def _resolve_parent_folder(service: Any, payload: Any) -> Tuple[str, Dict[str, A
             return projetos_folder["id"], {
                 "strategy": (
                     "airtable_projects_folder_cache_refreshed"
-                    if projects_folder_id
+                    if (projects_folder_id and should_update_airtable)
+                    else "airtable_projects_folder_cache_hit"
+                    if (projects_folder_id and not should_update_airtable)
                     else "airtable_auto_created_projects_folder"
                 ),
                 "record_id": record["id"],
