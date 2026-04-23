@@ -424,6 +424,17 @@ class SubmissionUpsertTests(unittest.TestCase):
             )
         )
 
+        drive_sync_calls: list[dict] = []
+
+        def fake_queue_drive_sync(*, background_tasks, payload, submission_id):  # noqa: ARG001
+            drive_sync_calls.append(
+                {
+                    "submission_id": submission_id,
+                    "workspace_slug": getattr(payload, "workspace_slug", None),
+                }
+            )
+            return {"ok": True, "status": "partial"}
+
         with (
             patch.object(submissions_module, "supabase", fake_supabase),
             patch.object(
@@ -440,12 +451,18 @@ class SubmissionUpsertTests(unittest.TestCase):
                 },
             ),
             patch.object(submissions_module, "_update_submission_airtable_success"),
+            patch.object(
+                submissions_module,
+                "_queue_google_drive_sync",
+                side_effect=fake_queue_drive_sync,
+            ),
         ):
             response = submissions_module._update_release_submission(
                 existing_row=deepcopy(fake_supabase.store["submissions"][0]),
                 payload=updated_payload,
                 now_iso="2026-04-18T12:10:00+00:00",
                 idempotency_key="idem-update-1",
+                background_tasks=BackgroundTasks(),
             )
 
         self.assertTrue(response["ok"])
@@ -475,6 +492,111 @@ class SubmissionUpsertTests(unittest.TestCase):
         self.assertIsNotNone(tracks_by_title["Faixa A"]["deleted_at"])
         self.assertEqual(tracks_by_title["Faixa D"]["order_number"], 3)
         self.assertTrue(tracks_by_title["Faixa D"]["client_track_id"])
+
+        # Drive sync must be queued on edit pós-submit (PR #12). Exactly one
+        # call, targeting the same submission id and carrying the payload
+        # workspace slug so folder reuse can land on the persisted folder.
+        self.assertEqual(len(drive_sync_calls), 1)
+        self.assertEqual(drive_sync_calls[0]["submission_id"], SUBMISSION_ID)
+        self.assertEqual(drive_sync_calls[0]["workspace_slug"], "atabaque")
+        self.assertEqual(response["drive_sync"], {"ok": True, "status": "partial"})
+
+    def test_update_release_submission_queues_google_drive_sync_on_edit(self) -> None:
+        """PR #12: the edit pós-submit path must queue Google Drive sync
+        exactly once so folder reuse / rename (PR #10) is exercised on
+        updates, matching the behavior of the initial submit path."""
+
+        existing_payload = _release_payload(
+            edit_token="edit-drive",
+            tracks=[
+                {
+                    "local_id": "local-a",
+                    "client_track_id": CLIENT_TRACK_ID_1,
+                    "order_number": 1,
+                    "title": "Faixa A",
+                    "primary_artists": "Ana",
+                    "authors": "Ana",
+                    "explicit_content": "no",
+                    "lyrics": "Letra A",
+                },
+            ],
+        )
+        fake_supabase = _FakeSupabase(
+            {
+                "submissions": [_submission_row(payload=existing_payload, version=1)],
+                "tracks": [
+                    _track_row(
+                        track_id="track-1",
+                        client_track_id=CLIENT_TRACK_ID_1,
+                        order_number=1,
+                        title="Faixa A",
+                    ),
+                ],
+                "submissions_revisions": [],
+            }
+        )
+
+        updated_payload = validate_submission_payload(
+            _release_payload(
+                edit_token="edit-drive",
+                tracks=[
+                    {
+                        "local_id": "local-a",
+                        "client_track_id": CLIENT_TRACK_ID_1,
+                        "order_number": 1,
+                        "title": "Faixa A (editada)",
+                        "primary_artists": "Ana",
+                        "authors": "Ana",
+                        "explicit_content": "no",
+                        "lyrics": "Letra A editada",
+                    },
+                ],
+            )
+        )
+
+        queue_calls: list[dict] = []
+
+        def fake_queue_drive_sync(*, background_tasks, payload, submission_id):  # noqa: ARG001
+            queue_calls.append(
+                {
+                    "submission_id": submission_id,
+                    "workspace_slug": payload.workspace_slug,
+                }
+            )
+            return {"ok": True, "status": "partial"}
+
+        with (
+            patch.object(submissions_module, "supabase", fake_supabase),
+            patch.object(
+                submissions_module,
+                "_sync_airtable",
+                return_value={
+                    "airtable_project": {"id": "airtable-project-1"},
+                    "airtable_tracks": [],
+                    "focus_track_record_id": None,
+                },
+            ),
+            patch.object(submissions_module, "_update_submission_airtable_success"),
+            patch.object(
+                submissions_module,
+                "_queue_google_drive_sync",
+                side_effect=fake_queue_drive_sync,
+            ),
+        ):
+            response = submissions_module._update_release_submission(
+                existing_row=deepcopy(fake_supabase.store["submissions"][0]),
+                payload=updated_payload,
+                now_iso="2026-04-18T12:30:00+00:00",
+                idempotency_key="idem-update-drive",
+                background_tasks=BackgroundTasks(),
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(len(queue_calls), 1)
+        self.assertEqual(queue_calls[0]["submission_id"], SUBMISSION_ID)
+        self.assertEqual(queue_calls[0]["workspace_slug"], "atabaque")
+        self.assertIn("drive_sync", response)
+        self.assertEqual(response["drive_sync"], {"ok": True, "status": "partial"})
 
     def test_load_edit_submission_backfills_legacy_client_track_ids(self) -> None:
         legacy_payload = _release_payload(

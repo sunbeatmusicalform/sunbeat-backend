@@ -2049,6 +2049,7 @@ def _update_release_submission(
     payload: ReleaseIntakeSubmissionPayload,
     now_iso: str,
     idempotency_key: str | None,
+    background_tasks: BackgroundTasks,
 ) -> Dict[str, Any]:
     submission_id = str(existing_row["id"])
     existing_version = int(existing_row.get("version") or 1)
@@ -2133,6 +2134,18 @@ def _update_release_submission(
     if airtable_error:
         response["airtable_error"] = airtable_error
         response["sync"]["airtable"] = "failed"
+
+    # Google Drive sync must run on edit pós-submit just like it does on the
+    # initial submit, so that folder reuse / rename logic (PR #10) is
+    # exercised when the submission is mutated. Folder reuse is keyed by
+    # submissions.google_drive_folder_id, so queuing this here will land on
+    # the same project folder rather than creating a duplicate.
+    drive_sync = _queue_google_drive_sync(
+        background_tasks=background_tasks,
+        payload=payload,
+        submission_id=submission_id,
+    )
+    response["drive_sync"] = drive_sync
     return response
 
 
@@ -2208,6 +2221,7 @@ def create_submission(
                 payload=validated_payload,
                 now_iso=_utc_now_iso(),
                 idempotency_key=clean_idempotency_key,
+                background_tasks=background_tasks,
             )
 
     replay_row = _load_recent_idempotent_submission(
