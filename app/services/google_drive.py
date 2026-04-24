@@ -334,6 +334,7 @@ def _upload_file_from_ref(service: Any, *, folder_id: str, file_ref: Any, fallba
         body=metadata,
         media_body=media,
         fields="id,name,mimeType,webViewLink",
+        supportsAllDrives=True,
     ).execute()
     logger.info("Google Drive file uploaded: %s (%s)", created["name"], created["id"])
     return created
