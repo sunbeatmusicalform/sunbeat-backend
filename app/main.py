@@ -29,6 +29,8 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "https://sunbeat.pro",
         "https://www.sunbeat.pro",
+        "https://sunbeat.com.br",
+        "https://www.sunbeat.com.br",
     ],
     allow_credentials=True,
     allow_methods=["*"],

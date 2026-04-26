@@ -29,6 +29,7 @@ from app.services.airtable import (
     upsert_airtable_tracks,
     update_airtable_project_focus_track,
 )
+from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable
 from app.services.email import send_edit_link_email, send_submission_summary_email
 from app.services.google_drive import sync_submission_to_google_drive
 
@@ -1973,8 +1974,10 @@ def _sync_airtable(
     edit_token: str,
 ) -> Dict[str, Any]:
     if _is_rights_clearance_payload(payload):
+        # Rights clearance sync is handled separately via sync_rights_clearance_to_airtable.
+        # This path should not be reached for clearance payloads.
         raise RuntimeError(
-            "Airtable sync for rights_clearance is not connected yet."
+            "Rights clearance submissions must use sync_rights_clearance_to_airtable, not _sync_airtable."
         )
 
     submission_row = _load_submission_row(submission_id)
@@ -2305,6 +2308,38 @@ def create_submission(
             airtable_error = str(exc)
             _update_submission_airtable_failed(submission_id, airtable_error)
             logger.exception("Airtable sync failed")
+
+    elif _is_rights_clearance_payload(validated_payload):
+        try:
+            clearance_sync_result = sync_rights_clearance_to_airtable(
+                payload=validated_payload,
+                submission_id=submission_id,
+                edit_token=edit_token,
+            )
+
+            if clearance_sync_result.get("skipped"):
+                logger.info(
+                    "Rights clearance Airtable sync skipped: reason=%s submission_id=%s",
+                    clearance_sync_result.get("skip_reason"),
+                    submission_id,
+                )
+            else:
+                airtable_project = clearance_sync_result.get("airtable_project") or {}
+                airtable_project_id = airtable_project.get("id")
+                if airtable_project_id:
+                    _update_submission_airtable_success(submission_id, airtable_project_id)
+
+                clearance_tracks = clearance_sync_result.get("airtable_tracks") or []
+                if created_tracks and clearance_tracks:
+                    _persist_airtable_track_ids(
+                        created_tracks=created_tracks,
+                        airtable_tracks=clearance_tracks,
+                    )
+
+        except Exception as exc:
+            airtable_error = str(exc)
+            _update_submission_airtable_failed(submission_id, airtable_error)
+            logger.exception("Rights clearance Airtable sync failed")
 
     drive_sync = _queue_google_drive_sync(
         background_tasks=background_tasks,
