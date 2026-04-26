@@ -29,6 +29,7 @@ from app.services.airtable import (
     create_airtable_tracks,
     update_airtable_project_focus_track,
 )
+from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable
 from app.services.email import send_edit_link_email, send_submission_summary_email
 from app.services.google_drive import sync_submission_to_google_drive
 
@@ -432,17 +433,6 @@ def _update_submission_email_skipped(submission_id: str, reason: str) -> None:
             "updated_at": _utc_now_iso(),
         }
     ).eq("id", submission_id).execute()
-
-
-def _load_submission_row(submission_id: str) -> Dict[str, Any] | None:
-    result = (
-        supabase.table("submissions")
-        .select("*")
-        .eq("id", submission_id)
-        .limit(1)
-        .execute()
-    )
-    return result.data[0] if result.data else None
 
 
 def _persist_airtable_track_ids(
@@ -1074,129 +1064,6 @@ def _load_workspace_email_settings(workspace_slug: str) -> Dict[str, Any]:
     }
 
 
-def _maybe_send_submission_summary_email(
-    submission_id: str,
-    validated_payload: WorkflowSubmissionPayload,
-) -> Dict[str, Any]:
-    row = _load_submission_row(submission_id)
-    if not row:
-        return {
-            "status": "failed",
-            "error": f"Submission {submission_id} not found before summary email dispatch.",
-            "recipients_count": 0,
-        }
-
-    if row.get("summary_email_sent"):
-        return {
-            "status": "already_sent",
-            "message_id": row.get("summary_email_message_id"),
-            "recipients_count": 0,
-        }
-
-    workspace_email_settings = _load_workspace_email_settings(
-        validated_payload.workspace_slug
-    )
-    notification_emails = workspace_email_settings["notification_emails"]
-    recipients_count = len(notification_emails)
-
-    if not _is_release_intake_payload(validated_payload):
-        return {
-            "status": "skipped",
-            "reason": "not_release_intake",
-            "recipients_count": recipients_count,
-        }
-
-    if not workspace_email_settings["submission_email_enabled"]:
-        return {
-            "status": "disabled",
-            "recipients_count": recipients_count,
-        }
-
-    if not notification_emails:
-        return {
-            "status": "skipped",
-            "reason": "no_recipients",
-            "recipients_count": 0,
-        }
-
-    try:
-        identification = validated_payload.identification
-        project = validated_payload.project
-        workflow_type = _submission_workflow_type(validated_payload)
-        release_date = _get_submission_release_date(validated_payload)
-        edit_url = _build_edit_url(
-            str(row.get("edit_token") or ""),
-            validated_payload.workspace_slug,
-            workflow_type,
-        )
-        email_result = send_submission_summary_email(
-            to_emails=notification_emails,
-            workspace_name=workspace_email_settings["workspace_name"],
-            submitter_name=identification.submitter_name,
-            submitter_email=identification.submitter_email,
-            project_title=identification.project_title,
-            release_type=identification.release_type,
-            release_date=release_date,
-            genre=project.genre,
-            focus_track_name=_get_focus_track_name(validated_payload),
-            track_titles=[track.title for track in validated_payload.tracks],
-            edit_url=edit_url,
-            idempotency_key=f"{submission_id}:summary",
-        )
-        provider_message_id = email_result.get("provider_message_id")
-        if not provider_message_id:
-            logger.warning(
-                "Submission summary email accepted without provider_message_id submission_id=%s provider_response=%s",
-                submission_id,
-                email_result.get("provider_response"),
-            )
-    except Exception as exc:
-        logger.exception(
-            "Submission summary email provider call failed submission_id=%s",
-            submission_id,
-        )
-        return {
-            "status": "failed",
-            "error": str(exc),
-            "recipients_count": recipients_count,
-        }
-
-    latest_row = _load_submission_row(submission_id)
-    if latest_row and latest_row.get("summary_email_sent"):
-        return {
-            "status": "already_sent_by_other",
-            "message_id": latest_row.get("summary_email_message_id"),
-            "recipients_count": recipients_count,
-        }
-
-    sent_at = _utc_now_iso()
-    try:
-        supabase.table("submissions").update(
-            {
-                "summary_email_sent": True,
-                "summary_email_sent_at": sent_at,
-                "summary_email_message_id": provider_message_id,
-                "updated_at": sent_at,
-            }
-        ).eq("id", submission_id).execute()
-    except Exception:
-        logger.exception(
-            "Submission summary email sent but flag update failed submission_id=%s",
-            submission_id,
-        )
-        return {
-            "status": "sent_but_flag_failed",
-            "message_id": provider_message_id,
-            "recipients_count": recipients_count,
-        }
-
-    return {
-        "status": "sent",
-        "message_id": provider_message_id,
-        "recipients_count": recipients_count,
-    }
-
-
 def _build_track_rows(
     *,
     payload: WorkflowSubmissionPayload,
@@ -1301,8 +1168,10 @@ def _sync_airtable(
     edit_token: str,
 ) -> Dict[str, Any]:
     if _is_rights_clearance_payload(payload):
+        # Rights clearance sync is handled separately via sync_rights_clearance_to_airtable.
+        # This path should not be reached for clearance payloads.
         raise RuntimeError(
-            "Airtable sync for rights_clearance is not connected yet."
+            "Rights clearance submissions must use sync_rights_clearance_to_airtable, not _sync_airtable."
         )
 
     identification = _safe_model_dump(payload.identification)
@@ -1461,6 +1330,38 @@ def create_submission(
             _update_submission_airtable_failed(submission_id, airtable_error)
             logger.exception("Airtable sync failed")
 
+    elif _is_rights_clearance_payload(validated_payload):
+        try:
+            clearance_sync_result = sync_rights_clearance_to_airtable(
+                payload=validated_payload,
+                submission_id=submission_id,
+                edit_token=edit_token,
+            )
+
+            if clearance_sync_result.get("skipped"):
+                logger.info(
+                    "Rights clearance Airtable sync skipped: reason=%s submission_id=%s",
+                    clearance_sync_result.get("skip_reason"),
+                    submission_id,
+                )
+            else:
+                airtable_project = clearance_sync_result.get("airtable_project") or {}
+                airtable_project_id = airtable_project.get("id")
+                if airtable_project_id:
+                    _update_submission_airtable_success(submission_id, airtable_project_id)
+
+                clearance_tracks = clearance_sync_result.get("airtable_tracks") or []
+                if created_tracks and clearance_tracks:
+                    _persist_airtable_track_ids(
+                        created_tracks=created_tracks,
+                        airtable_tracks=clearance_tracks,
+                    )
+
+        except Exception as exc:
+            airtable_error = str(exc)
+            _update_submission_airtable_failed(submission_id, airtable_error)
+            logger.exception("Rights clearance Airtable sync failed")
+
     drive_sync = _queue_google_drive_sync(
         background_tasks=background_tasks,
         payload=validated_payload,
@@ -1558,24 +1459,43 @@ def create_submission(
             _update_submission_email_failed(submission_id, email_error)
             logger.exception("Edit link email failed")
 
-    notification_email_result = _maybe_send_submission_summary_email(
-        submission_id,
-        validated_payload,
-    )
-    notification_email_recipients = notification_email_result.get(
-        "recipients_count",
-        0,
-    )
-    notification_email_status = {
-        "already_sent": "already_sent",
-        "already_sent_by_other": "already_sent",
-        "sent": "ok",
-        "sent_but_flag_failed": "ok_flag_failed",
-        "skipped": "skipped",
-        "disabled": "disabled",
-        "failed": "failed",
-    }.get(notification_email_result["status"], "failed")
-    notification_email_error = notification_email_result.get("error")
+    try:
+        workspace_email_settings = _load_workspace_email_settings(
+            validated_payload.workspace_slug
+        )
+        notification_emails = workspace_email_settings["notification_emails"]
+        notification_email_recipients = len(notification_emails)
+
+        if (
+            _is_release_intake_payload(validated_payload)
+            and
+            workspace_email_settings["submission_email_enabled"]
+            and notification_emails
+        ):
+            identification = validated_payload.identification
+            project = validated_payload.project
+            send_submission_summary_email(
+                to_emails=notification_emails,
+                workspace_name=workspace_email_settings["workspace_name"],
+                submitter_name=identification.submitter_name,
+                submitter_email=identification.submitter_email,
+                project_title=identification.project_title,
+                release_type=identification.release_type,
+                release_date=release_date,
+                genre=project.genre,
+                focus_track_name=_get_focus_track_name(validated_payload),
+                track_titles=[track.title for track in validated_payload.tracks],
+                edit_url=edit_url,
+            )
+            notification_email_status = "ok"
+        elif workspace_email_settings["submission_email_enabled"]:
+            notification_email_status = "skipped"
+        else:
+            notification_email_status = "disabled"
+    except Exception as exc:
+        notification_email_error = str(exc)
+        notification_email_status = "failed"
+        logger.exception("Submission summary email failed")
 
     response: Dict[str, Any] = {
         "ok": True,
@@ -1622,12 +1542,6 @@ def create_submission(
     }
 
     response["notification_email_recipients"] = notification_email_recipients
-    response["notification_email_already_sent"] = (
-        notification_email_result["status"] in {"already_sent"}
-    )
-    response["notification_email_message_id"] = notification_email_result.get(
-        "message_id"
-    )
 
     if notification_email_error:
         response["notification_email_error"] = notification_email_error
