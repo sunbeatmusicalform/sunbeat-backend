@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_ENABLED: bool = Field(default=False)
     AIRTABLE_PEOPLE_REGISTRY_BASE_ID: str | None = Field(default=None)
     AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE: str = Field(default="Dados Cadastrais")
+    AIRTABLE_RIGHTS_CLEARANCE_MUSICAL_ENABLED: bool = Field(default=False)
 
     GOOGLE_DRIVE_ENABLED: bool = Field(default=False)
     GOOGLE_DRIVE_ROOT_FOLDER_ID: str | None = Field(default=None)
