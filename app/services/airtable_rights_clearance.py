@@ -3,22 +3,24 @@ from __future__ import annotations
 """
 app/services/airtable_rights_clearance.py
 ──────────────────────────────────────────
-Etapa 1 — Syncs Rights Clearance submissions to Airtable [V2] Clearance.
-
-Creates a single record in [V2] Clearance for every supported format.
-[V2] Clearance Itens and [V2] Clearance Partes are deferred to Etapa 2+.
+Etapa 2 — Syncs Rights Clearance submissions to Airtable [V2] Clearance
+          and creates [V2] Clearance Itens for music_release_clearance_intake.
 
 Supported formats (all active):
-  music_release_clearance_intake  -> creates [V2] Clearance record
-  music_project_track             -> creates [V2] Clearance record
-  audiovisual_product_sync        -> creates [V2] Clearance record
+  music_release_clearance_intake  -> [V2] Clearance case + [V2] Clearance Itens
+                                     (1 item per track, linked to case)
+  music_project_track             -> [V2] Clearance case only
+  audiovisual_product_sync        -> [V2] Clearance case only
+
+[V2] Clearance Partes deferred to Etapa 3.
 
 Returns:
   {
     "skipped": bool,
     "skip_reason": str | None,
     "airtable_project": dict | None,   # the created [V2] Clearance record
-    "airtable_tracks": list,           # always [] in Etapa 1
+    "airtable_tracks": list,           # always [] (no Supabase track ID mapping needed)
+    "airtable_itens": list,            # created [V2] Clearance Itens records (Etapa 2)
   }
 """
 
@@ -40,6 +42,10 @@ ACTIVE_FORMATS = {
 }
 
 CLEARANCE_V2_TABLE = "[V2] Clearance"
+CLEARANCE_ITENS_TABLE = "[V2] Clearance Itens"
+
+# Formats that produce [V2] Clearance Itens (one per track)
+ITENS_FORMATS = {"music_release_clearance_intake"}
 
 FORMAT_LABELS: Dict[str, str] = {
     "music_release_clearance_intake": "Clearance – Lançamento Musical",
@@ -249,6 +255,86 @@ def _create_clearance_record(fields: Dict[str, Any]) -> Dict[str, Any]:
     return _request_json("POST", url, payload={"fields": fields})
 
 
+# --- [V2] Clearance Itens (Etapa 2) ------------------------------------------
+
+ITENS_BATCH_SIZE = 10  # Airtable batch-create limit
+
+
+def _build_item_fields(track: Dict[str, Any], case_id: str) -> Dict[str, Any]:
+    """
+    Maps a single RightsClearanceTrackPayload dict to [V2] Clearance Itens fields.
+
+    Notes on schema mapping:
+    - 'Natureza do Item' valid choices: Obra, Fonograma, Contrato, Autorização,
+       Licença, Aprovação, Documento de suporte. We use 'Fonograma' (not 'Faixa'
+       which does not exist in the Airtable schema).
+    - 'Clearance Case' is multipleRecordLinks → array of record IDs.
+    """
+    title = _safe_str(track.get("title"))
+    isrc = _safe_str(track.get("isrc_code"))
+    notes = _safe_str(track.get("notes_for_clearance"))
+
+    fields: Dict[str, Any] = {
+        "Nome do Item": title,
+        "Clearance Case": [case_id],
+        "Tipo de Direito": "Fonograma / Master",
+        "Natureza do Item": "Fonograma",
+        "Título do Fonograma": title,
+        "Status da Liberação": "Pendente",
+    }
+
+    # Optional: ISRC only when has_isrc == "yes" and code is present
+    if track.get("has_isrc") == "yes" and isrc:
+        fields["ISRC"] = isrc
+
+    # Optional: extra notes per track
+    parts = []
+    if track.get("primary_artists"):
+        parts.append(f"[Artistas] {track['primary_artists']}")
+    if track.get("authors"):
+        parts.append(f"[Autores] {track['authors']}")
+    if track.get("publishers"):
+        parts.append(f"[Editoras] {track['publishers']}")
+    if track.get("phonogram_owner"):
+        parts.append(f"[Produtor Fonográfico] {track['phonogram_owner']}")
+    if notes:
+        parts.append(f"[Notas] {notes}")
+    if parts:
+        fields["Observações Jurídicas / Operacionais"] = "\n".join(parts)
+
+    # Drop empty strings
+    return {k: v for k, v in fields.items() if v is not None and v != ""}
+
+
+def _create_clearance_itens(
+    case_id: str,
+    tracks: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Batch-creates [V2] Clearance Itens records linked to the given case.
+    Returns the list of created Airtable records.
+    Airtable allows max 10 records per batch POST.
+    """
+    if not tracks:
+        return []
+
+    base_id = _base_id()
+    table_encoded = quote(CLEARANCE_ITENS_TABLE, safe="")
+    url = f"https://api.airtable.com/v0/{base_id}/{table_encoded}"
+
+    created: List[Dict[str, Any]] = []
+    # Process in batches of ITENS_BATCH_SIZE
+    for i in range(0, len(tracks), ITENS_BATCH_SIZE):
+        batch = tracks[i : i + ITENS_BATCH_SIZE]
+        records_payload = [
+            {"fields": _build_item_fields(t, case_id)} for t in batch
+        ]
+        response = _request_json("POST", url, payload={"records": records_payload})
+        created.extend(response.get("records", []))
+
+    return created
+
+
 # --- Public entry point -------------------------------------------------------
 
 
@@ -282,6 +368,7 @@ def sync_rights_clearance_to_airtable(
             "skip_reason": "feature_flag_disabled",
             "airtable_project": None,
             "airtable_tracks": [],
+            "airtable_itens": [],
         }
 
     clearance_format: str = _safe_str(
@@ -299,12 +386,14 @@ def sync_rights_clearance_to_airtable(
             "skip_reason": f"unknown_format:{clearance_format}",
             "airtable_project": None,
             "airtable_tracks": [],
+            "airtable_itens": [],
         }
 
     requester = _safe_dict(getattr(payload, "requester_identification", None))
     project_context = _safe_dict(getattr(payload, "project_context", None))
     clearance_scope = _safe_dict(getattr(payload, "clearance_scope", None))
     assets_references = _safe_dict(getattr(payload, "assets_references", None))
+    tracks_raw: List[Any] = list(getattr(payload, "tracks", None) or [])
 
     workspace_slug: str = _safe_str(getattr(payload, "workspace_slug", ""))
     edit_url = _build_edit_url(edit_token, workspace_slug)
@@ -327,16 +416,46 @@ def sync_rights_clearance_to_airtable(
     )
 
     airtable_record = _create_clearance_record(fields)
+    case_id: str = airtable_record["id"]
 
     logger.info(
         "Rights clearance [V2] Clearance record created: airtable_id=%s submission_id=%s",
-        airtable_record.get("id"),
+        case_id,
         submission_id,
     )
+
+    # ── Etapa 2: create [V2] Clearance Itens for music_release_clearance_intake ──
+    airtable_itens: List[Dict[str, Any]] = []
+
+    if clearance_format in ITENS_FORMATS and tracks_raw:
+        tracks_dicts = [_safe_dict(t) for t in tracks_raw]
+        logger.info(
+            "Creating %d [V2] Clearance Itens for case=%s submission_id=%s",
+            len(tracks_dicts),
+            case_id,
+            submission_id,
+        )
+        try:
+            airtable_itens = _create_clearance_itens(case_id, tracks_dicts)
+            logger.info(
+                "[V2] Clearance Itens created: count=%d case=%s submission_id=%s",
+                len(airtable_itens),
+                case_id,
+                submission_id,
+            )
+        except Exception:
+            # Non-fatal: case was already created successfully; log and continue
+            logger.exception(
+                "Failed to create [V2] Clearance Itens for case=%s submission_id=%s — "
+                "case record is intact, Itens will need manual creation",
+                case_id,
+                submission_id,
+            )
 
     return {
         "skipped": False,
         "skip_reason": None,
         "airtable_project": airtable_record,
         "airtable_tracks": [],
+        "airtable_itens": airtable_itens,
     }
