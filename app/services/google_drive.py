@@ -16,7 +16,6 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
 from app.core.config import settings
-from app.core.database import supabase
 
 logger = logging.getLogger("sunbeat.google_drive")
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -198,35 +197,6 @@ def _get_folder_by_id(service: Any, folder_id: Optional[str]) -> Optional[Dict[s
         return None
 
     return {"id": folder["id"], "name": folder.get("name") or folder_id}
-
-
-def _load_submission(submission_id: Optional[str]) -> Optional[Dict[str, Any]]:
-    if not submission_id:
-        return None
-
-    result = (
-        supabase.table("submissions")
-        .select("*")
-        .eq("id", submission_id)
-        .limit(1)
-        .execute()
-    )
-    rows = getattr(result, "data", None) or []
-    return rows[0] if rows else None
-
-
-def _persist_submission_google_drive_folder_id(
-    submission_id: Optional[str],
-    folder_id: Optional[str],
-) -> None:
-    if not submission_id or not folder_id:
-        return
-
-    supabase.table("submissions").update(
-        {
-            "google_drive_folder_id": folder_id,
-        }
-    ).eq("id", submission_id).execute()
 
 
 def _find_child_folder(service: Any, *, parent_id: str, name: str) -> Optional[Dict[str, Any]]:
@@ -552,71 +522,17 @@ def _resolve_parent_folder(service: Any, payload: Any) -> Tuple[str, Dict[str, A
     raise RuntimeError("Could not resolve Google Drive parent folder.")
 
 
-def ensure_project_folder(service: Any, submission: Dict[str, Any]) -> Dict[str, Any]:
-    payload = submission.get("payload")
-    parent_folder_id = str(submission["parent_folder_id"])
-    folder_name = _build_release_folder_name(payload)
-    submission_id = str(submission.get("id") or "") or None
-    stored_folder_id = _extract_folder_id(
-        str(submission.get("google_drive_folder_id") or "")
-    )
-
-    if stored_folder_id:
-        existing_folder = _get_folder_by_id(service, stored_folder_id)
-        if existing_folder:
-            expected_name = _sanitize_name(folder_name, "Projeto")
-            current_name = _sanitize_name(existing_folder.get("name"), expected_name)
-            if current_name != expected_name:
-                updated = service.files().update(
-                    fileId=stored_folder_id,
-                    body={"name": expected_name},
-                    fields="id,name",
-                    supportsAllDrives=True,
-                ).execute()
-                folder = {
-                    "id": updated["id"],
-                    "name": updated.get("name") or expected_name,
-                    "created": False,
-                    "renamed": True,
-                }
-            else:
-                folder = {
-                    "id": existing_folder["id"],
-                    "name": existing_folder.get("name") or expected_name,
-                    "created": False,
-                    "renamed": False,
-                }
-
-            _persist_submission_google_drive_folder_id(submission_id, folder["id"])
-            return folder
-
-    folder = _ensure_folder(
-        service,
-        parent_id=parent_folder_id,
-        name=folder_name,
-    )
-    _persist_submission_google_drive_folder_id(submission_id, folder["id"])
-    folder["renamed"] = False
-    return folder
-
-
-def sync_submission_to_google_drive(
-    payload: Any,
-    submission_id: Optional[str] = None,
-) -> Dict[str, Any]:
+def sync_submission_to_google_drive(payload: Any) -> Dict[str, Any]:
     if not settings.GOOGLE_DRIVE_ENABLED:
         return {"ok": True, "status": "skipped", "reason": "disabled"}
 
     try:
         service = _build_drive_service()
         parent_folder_id, routing = _resolve_parent_folder(service, payload)
-        submission = _load_submission(submission_id) or {}
-        submission["id"] = submission.get("id") or submission_id
-        submission["payload"] = payload
-        submission["parent_folder_id"] = parent_folder_id
-        release_folder = ensure_project_folder(
+        release_folder = _ensure_folder(
             service,
-            submission,
+            parent_id=parent_folder_id,
+            name=_build_release_folder_name(payload),
         )
         logger.info(
             "Google Drive release folder ready: folder_id=%s parent_folder_id=%s name=%s",
@@ -693,4 +609,79 @@ def sync_submission_to_google_drive(
         }
     except Exception as exc:
         logger.exception("Google Drive sync failed at top level")
+        return {"ok": False, "status": "failed", "error": str(exc)}
+
+
+def sync_clearance_to_google_drive(payload: Any) -> Dict[str, Any]:
+    """Create a Google Drive folder for a rights clearance submission and upload any supporting files."""
+    if not settings.GOOGLE_DRIVE_ENABLED:
+        return {"ok": True, "status": "skipped", "reason": "disabled"}
+
+    try:
+        clearance_format = str(
+            getattr(getattr(payload, "request_type", None), "clearance_format", "") or ""
+        ).strip()
+        project_context = getattr(payload, "project_context", None)
+        project_title = _sanitize_name(
+            str(getattr(project_context, "project_title", "") or "").strip(),
+            "Clearance",
+        )
+
+        # Musical formats: music_release_clearance_intake, music_project_track
+        is_musical = clearance_format in ("music_release_clearance_intake", "music_project_track")
+        root_folder_id = (
+            settings.GOOGLE_DRIVE_CLEARANCE_MUSICAL_ROOT_FOLDER_ID
+            if is_musical
+            else settings.GOOGLE_DRIVE_CLEARANCE_NON_MUSICAL_ROOT_FOLDER_ID
+        ) or settings.GOOGLE_DRIVE_ROOT_FOLDER_ID
+
+        if not root_folder_id:
+            raise RuntimeError("Google Drive root folder for clearance is not configured")
+
+        service = _build_drive_service()
+        root = _get_folder_by_id(service, root_folder_id)
+        if not root:
+            raise RuntimeError(
+                f"Google Drive clearance root folder not found or inaccessible: {root_folder_id}"
+            )
+
+        project_folder = _ensure_folder(service, parent_id=root["id"], name=project_title)
+        logger.info(
+            "Google Drive clearance folder ready: folder_id=%s name=%s root_id=%s format=%s",
+            project_folder["id"],
+            project_folder["name"],
+            root["id"],
+            clearance_format,
+        )
+
+        uploaded_files: List[Dict[str, Any]] = []
+        upload_errors: List[str] = []
+
+        assets = getattr(payload, "assets_references", None)
+        supporting_files = list(getattr(assets, "supporting_files", None) or [])
+        for index, file_ref in enumerate(supporting_files, start=1):
+            try:
+                created = _upload_file_from_ref(
+                    service,
+                    folder_id=project_folder["id"],
+                    file_ref=file_ref,
+                    fallback_name=f"arquivo_{index}",
+                )
+                if created:
+                    uploaded_files.append({"file": created})
+            except Exception as exc:
+                upload_errors.append(f"supporting_files[{index}]: {exc}")
+
+        return {
+            "ok": True,
+            "status": "ok" if not upload_errors else "partial",
+            "clearance_format": clearance_format,
+            "is_musical": is_musical,
+            "root_folder_id": root["id"],
+            "project_folder": project_folder,
+            "uploaded_files": uploaded_files,
+            "upload_errors": upload_errors,
+        }
+    except Exception as exc:
+        logger.exception("Google Drive clearance sync failed at top level")
         return {"ok": False, "status": "failed", "error": str(exc)}

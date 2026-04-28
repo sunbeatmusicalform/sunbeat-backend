@@ -63,7 +63,6 @@ class TrackPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     local_id: str
-    client_track_id: Optional[str] = None
     order_number: int
     title: str = Field(..., min_length=1)
     is_focus_track: Optional[bool] = False
@@ -109,7 +108,6 @@ class ReleaseIntakeSubmissionPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     draft_token: str
-    edit_token: Optional[str] = None
     workspace_slug: str
     workflow_type: WorkflowType = "release_intake"
     identification: IdentificationPayload
@@ -198,6 +196,7 @@ class RightsClearanceSubmissionPayload(BaseModel):
     draft_token: str
     workspace_slug: str
     workflow_type: WorkflowType = "rights_clearance"
+    edit_token: Optional[str] = None
     requester_identification: RightsClearanceRequesterPayload
     request_type: RightsClearanceRequestTypePayload
     project_context: RightsClearanceProjectContextPayload
@@ -290,4 +289,4 @@ def validate_submission_payload(payload: Dict[str, Any]) -> WorkflowSubmissionPa
     if workflow_type == "rights_clearance":
         return RightsClearanceSubmissionPayload.model_validate(payload)
 
-    return ReleaseIntakeSubmissionPayload.model_validate(payload)
+    return ReleaseIntakeSubmi
