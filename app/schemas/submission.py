@@ -110,6 +110,7 @@ class ReleaseIntakeSubmissionPayload(BaseModel):
     draft_token: str
     workspace_slug: str
     workflow_type: WorkflowType = "release_intake"
+    edit_token: Optional[str] = None
     identification: IdentificationPayload
     project: ProjectPayload
     tracks: List[TrackPayload]
@@ -287,6 +288,4 @@ def validate_submission_payload(payload: Dict[str, Any]) -> WorkflowSubmissionPa
     workflow_type = str(payload.get("workflow_type") or "release_intake").strip()
 
     if workflow_type == "rights_clearance":
-        return RightsClearanceSubmissionPayload.model_validate(payload)
-
-    return ReleaseIntakeSubmi
+        return RightsClearanceSubmissionPayload.model_validate(pay
