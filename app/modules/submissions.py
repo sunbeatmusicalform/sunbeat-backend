@@ -250,6 +250,8 @@ def _get_focus_track(payload: WorkflowSubmissionPayload) -> Any | None:
 
 
 def _get_primary_artist(payload: WorkflowSubmissionPayload) -> Optional[str]:
+    if _is_company_registry_payload(payload):
+        return payload.company_data.fantasy_name or payload.company_data.legal_name or None
     if _is_rights_clearance_payload(payload):
         if getattr(payload.request_type, "clearance_format", "") == "music_release_clearance_intake":
             first_track = (payload.tracks or [None])[0]
@@ -337,24 +339,32 @@ def _calculate_days_until_release(release_date: Any) -> Optional[int]:
 def _get_submission_contact_email(payload: WorkflowSubmissionPayload) -> str:
     if _is_rights_clearance_payload(payload):
         return payload.requester_identification.requester_email
+    if _is_company_registry_payload(payload):
+        return str(payload.legal_representative.email)
     return payload.identification.submitter_email
 
 
 def _get_submission_contact_name(payload: WorkflowSubmissionPayload) -> str:
     if _is_rights_clearance_payload(payload):
         return payload.requester_identification.requester_name
+    if _is_company_registry_payload(payload):
+        return payload.legal_representative.name
     return payload.identification.submitter_name
 
 
 def _get_submission_project_title(payload: WorkflowSubmissionPayload) -> str:
     if _is_rights_clearance_payload(payload):
         return payload.project_context.project_title
+    if _is_company_registry_payload(payload):
+        return payload.company_data.fantasy_name or payload.company_data.legal_name
     return payload.identification.project_title
 
 
 def _get_submission_release_date(payload: WorkflowSubmissionPayload) -> Optional[str]:
     if _is_rights_clearance_payload(payload):
         return _normalize_release_date(payload.project_context.release_or_start_date)
+    if _is_company_registry_payload(payload):
+        return None
     return _normalize_release_date(getattr(payload.project, "release_date", None))
 
 
@@ -1172,6 +1182,42 @@ def _build_submission_row(
             "payload": payload.model_dump() if hasattr(payload, "model_dump") else {},
             "airtable_sync_status": "skipped",
             "email_status": "pending",
+            "idempotency_key": idempotency_key,
+        }
+
+    if _is_company_registry_payload(payload):
+        company = payload.company_data
+        legal = payload.legal_representative
+        return {
+            "id": submission_id,
+            "draft_token": _as_uuid(payload.draft_token),
+            "status": "submitted",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+            "submitted_at": now_iso,
+            "version": 1,
+            "is_update": False,
+            "edit_token": edit_token,
+            "client_slug": payload.workspace_slug,
+            "email": str(legal.email),
+            "artist_name": legal.name,
+            "release_type": "company_registry",
+            "release_title": company.fantasy_name or company.legal_name,
+            "main_title": company.legal_name,
+            "track_title": company.document_number,
+            "genre": company.document_type,
+            "release_date": None,
+            "cover_url": None,
+            "cover_path": None,
+            "marketing_json": {
+                "contract_representative": _safe_model_dump(payload.contract_representative),
+                "financial_representative": _safe_model_dump(payload.financial_representative),
+                "banking_data": _safe_model_dump(payload.banking_data),
+            },
+            "tracks_json": [],
+            "payload": payload.model_dump() if hasattr(payload, "model_dump") else {},
+            "airtable_sync_status": "pending",
+            "email_status": "skipped",
             "idempotency_key": idempotency_key,
         }
 
