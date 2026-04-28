@@ -1905,6 +1905,9 @@ def _build_track_rows(
     now_iso: str,
     prepared_track_payloads: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
+    if _is_company_registry_payload(payload):
+        return []
+
     if _is_rights_clearance_payload(payload):
         if getattr(payload.request_type, "clearance_format", "") != "music_release_clearance_intake":
             return []
