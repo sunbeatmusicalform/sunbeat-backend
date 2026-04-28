@@ -55,4 +55,8 @@ class Settings(BaseSettings):
     GOOGLE_DRIVE_ENABLED: bool = Field(default=False)
     GOOGLE_DRIVE_ROOT_FOLDER_ID: str | None = Field(default=None)
     GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON: str | None = Field(default=None)
-    GOOGLE_DRIVE_CLEARANCE_
+    GOOGLE_DRIVE_CLEARANCE_MUSICAL_ROOT_FOLDER_ID: str | None = Field(default=None)
+    GOOGLE_DRIVE_CLEARANCE_NON_MUSICAL_ROOT_FOLDER_ID: str | None = Field(default=None)
+
+
+settings = Settings()
