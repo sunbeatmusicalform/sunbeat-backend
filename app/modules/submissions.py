@@ -19,6 +19,7 @@ from app.modules.workflow_registry import (
     resolve_workflow_identity,
 )
 from app.schemas.submission import (
+    CompanyRegistrySubmissionPayload,
     ReleaseIntakeSubmissionPayload,
     RightsClearanceSubmissionPayload,
     WorkflowSubmissionPayload,
@@ -29,6 +30,7 @@ from app.services.airtable import (
     upsert_airtable_tracks,
     update_airtable_project_focus_track,
 )
+from app.services.airtable_company_registry import sync_company_registry_to_airtable
 from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable
 from app.services.email import send_edit_link_email, send_submission_summary_email
 from app.services.google_drive import sync_clearance_to_google_drive, sync_submission_to_google_drive
@@ -36,7 +38,6 @@ from app.services.google_drive import sync_clearance_to_google_drive, sync_submi
 logger = logging.getLogger("sunbeat.submissions")
 
 router = APIRouter(prefix="/submissions", tags=["Submissions"])
-
 
 EMAIL_SETTINGS_STEP_KEY = "__workspace_settings__"
 EMAIL_SETTINGS_FIELD_KEY = "submission_notification_emails"
@@ -170,6 +171,10 @@ def _is_rights_clearance_payload(payload: WorkflowSubmissionPayload) -> bool:
 
 def _is_release_intake_payload(payload: WorkflowSubmissionPayload) -> bool:
     return isinstance(payload, ReleaseIntakeSubmissionPayload)
+
+
+def _is_company_registry_payload(payload: WorkflowSubmissionPayload) -> bool:
+    return isinstance(payload, CompanyRegistrySubmissionPayload)
 
 
 def _submission_workflow_type(payload: WorkflowSubmissionPayload) -> str:
@@ -2437,6 +2442,20 @@ def create_submission(
             _update_submission_airtable_failed(submission_id, airtable_error)
             logger.exception("Rights clearance Airtable sync failed")
 
+    elif _is_company_registry_payload(validated_payload):
+        try:
+            company_sync_result = sync_company_registry_to_airtable(
+                payload=validated_payload,
+            )
+            if company_sync_result.get("status") == "created":
+                record_id = company_sync_result.get("record_id", "")
+                if record_id:
+                    _update_submission_airtable_success(submission_id, record_id)
+        except Exception as exc:
+            airtable_error = str(exc)
+            _update_submission_airtable_failed(submission_id, airtable_error)
+            logger.exception("Company registry Airtable sync failed")
+
     drive_sync = _queue_google_drive_sync(
         background_tasks=background_tasks,
         payload=validated_payload,
@@ -2470,7 +2489,7 @@ def create_submission(
     )
 
     if (
-        _submission_workflow_type(validated_payload) == RIGHTS_CLEARANCE_WORKFLOW_TYPE
+        _submission_workflow_type(validated_payload) in (RIGHTS_CLEARANCE_WORKFLOW_TYPE, "company_registry")
         and not supports_workflow_routed_edit_email
     ):
         email_status = "skipped"

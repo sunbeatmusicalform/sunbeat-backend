@@ -279,8 +279,65 @@ class RightsClearanceSubmissionPayload(BaseModel):
         return self
 
 
+
+class CompanyDataPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    document_type: Literal["cpf", "cnpj"]
+    document_number: str = Field(..., min_length=1)
+    fantasy_name: str = Field(..., min_length=1)
+    legal_name: str = Field(..., min_length=1)
+    address: str = Field(..., min_length=1)
+    city: str = Field(..., min_length=1)
+    state: str = Field(..., min_length=1)
+    zip_code: str = Field(..., min_length=1)
+
+
+class RepresentativePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    name: str = Field(..., min_length=1)
+    phone: str = Field(..., min_length=1)
+    email: EmailStr
+
+
+class DependentRepresentativePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    same_as_legal: Optional[YesNo] = None
+    same_as_contract: Optional[YesNo] = None
+    name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+
+
+class BankingDataPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    bank_name: str = Field(..., min_length=1)
+    agency: str = Field(..., min_length=1)
+    account: str = Field(..., min_length=1)
+    account_type: Literal["corrente", "poupanca"]
+    pix_key: Optional[str] = None
+
+
+class CompanyRegistrySubmissionPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    draft_token: str
+    workspace_slug: str
+    workflow_type: WorkflowType = "company_registry"
+    edit_token: Optional[str] = None
+    company_data: CompanyDataPayload
+    legal_representative: RepresentativePayload
+    contract_representative: DependentRepresentativePayload
+    financial_representative: DependentRepresentativePayload
+    banking_data: BankingDataPayload
+    meta: Optional[SubmissionMetaPayload] = None
+
+
 WorkflowSubmissionPayload = (
-    ReleaseIntakeSubmissionPayload | RightsClearanceSubmissionPayload
+    ReleaseIntakeSubmissionPayload | RightsClearanceSubmissionPayload | CompanyRegistrySubmissionPayload
 )
 SubmissionPayload = ReleaseIntakeSubmissionPayload
 
@@ -290,5 +347,8 @@ def validate_submission_payload(payload: Dict[str, Any]) -> WorkflowSubmissionPa
 
     if workflow_type == "rights_clearance":
         return RightsClearanceSubmissionPayload.model_validate(payload)
+
+    if workflow_type == "company_registry":
+        return CompanyRegistrySubmissionPayload.model_validate(payload)
 
     return ReleaseIntakeSubmissionPayload.model_validate(payload)
