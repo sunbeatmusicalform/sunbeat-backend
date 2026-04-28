@@ -2209,12 +2209,11 @@ async def load_edit_submission(edit_token: str):
     }
 
 
-@router.post("")
 def _handle_clearance_edit_resubmit(
     edit_token: str,
     payload: "RightsClearanceSubmissionPayload",
     idempotency_key: str | None,
-) -> Dict[str, Any]:
+) -> Dict[str, Any] | None:
     existing_row = _load_submission_by_edit_token(edit_token)
     if existing_row is None:
         return None  # fall through to create new submission
@@ -2265,6 +2264,7 @@ def _handle_clearance_edit_resubmit(
     }
 
 
+@router.post("")
 def create_submission(
     payload: Dict[str, Any],
     background_tasks: BackgroundTasks,
@@ -2276,11 +2276,10 @@ def create_submission(
     if isinstance(validated_payload, RightsClearanceSubmissionPayload):
         _edit_token = str(getattr(validated_payload, "edit_token", None) or "").strip() or None
         if _edit_token:
-            clean_key = _clean_idempotency_key(idempotency_key)
             result = _handle_clearance_edit_resubmit(
                 edit_token=_edit_token,
                 payload=validated_payload,
-                idempotency_key=clean_key,
+                idempotency_key=_clean_idempotency_key(idempotency_key),
             )
             if result is not None:
                 return result
