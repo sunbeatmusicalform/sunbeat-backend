@@ -38,18 +38,6 @@ logger = logging.getLogger("sunbeat.submissions")
 router = APIRouter(prefix="/submissions", tags=["Submissions"])
 
 
-@router.get("/debug-drive-config")
-def debug_drive_config() -> dict:
-    """Temporary: reveal which Drive env vars are set (booleans only)."""
-    return {
-        "GOOGLE_DRIVE_ENABLED": settings.GOOGLE_DRIVE_ENABLED,
-        "GOOGLE_DRIVE_ROOT_FOLDER_ID": bool(settings.GOOGLE_DRIVE_ROOT_FOLDER_ID),
-        "GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON": bool(settings.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON),
-        "GOOGLE_DRIVE_CLEARANCE_MUSICAL_ROOT_FOLDER_ID": bool(settings.GOOGLE_DRIVE_CLEARANCE_MUSICAL_ROOT_FOLDER_ID),
-        "GOOGLE_DRIVE_CLEARANCE_NON_MUSICAL_ROOT_FOLDER_ID": bool(settings.GOOGLE_DRIVE_CLEARANCE_NON_MUSICAL_ROOT_FOLDER_ID),
-    }
-
-
 EMAIL_SETTINGS_STEP_KEY = "__workspace_settings__"
 EMAIL_SETTINGS_FIELD_KEY = "submission_notification_emails"
 IDEMPOTENCY_WINDOW = timedelta(minutes=10)
