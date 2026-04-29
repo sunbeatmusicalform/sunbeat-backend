@@ -3,42 +3,32 @@ Airtable sync para workflow company_registry.
 
 Tabela alvo: Company Registry (configuravel via AIRTABLE_COMPANY_REGISTRY_TABLE_ID).
 Se a variavel nao estiver definida, o sync e pulado com log de aviso.
+
+Usa httpx via _request_json (mesmo padrao de airtable.py / airtable_rights_clearance.py).
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any, Dict, Optional
-
-from pyairtable import Api
+from urllib.parse import quote
 
 from app.core.config import settings
 from app.schemas.submission import CompanyRegistrySubmissionPayload
+from app.services.airtable import _base_id, _request_json
 
 logger = logging.getLogger(__name__)
 
-
-def _get_airtable_client() -> Optional[Api]:
-    token = settings.AIRTABLE_API_KEY
-    if not token:
-        logger.warning("[company_registry] AIRTABLE_API_KEY nao configurada — sync pulado")
-        return None
-    return Api(token)
+AIRTABLE_API_URL = "https://api.airtable.com/v0"
 
 
-def _resolve_rep_name(
-    rep: Any,
-    legal: Any,
-    contract: Any = None,
-) -> str:
+def _resolve_rep_name(rep: Any, legal: Any, contract: Any = None) -> str:
     """Resolve nome efetivo do responsavel, respeitando same_as flags."""
     same_as_legal = getattr(rep, "same_as_legal", None)
     same_as_contract = getattr(rep, "same_as_contract", None)
-
     if same_as_legal == "yes":
         return getattr(legal, "name", "") or ""
     if same_as_contract == "yes" and contract:
-        # contract representative can also be same_as_legal
         if getattr(contract, "same_as_legal", None) == "yes":
             return getattr(legal, "name", "") or ""
         return getattr(contract, "name", "") or ""
@@ -77,26 +67,29 @@ def sync_company_registry_to_airtable(
 
     Retorna dict com ok, status, record_id.
     """
-    base_id = getattr(settings, "AIRTABLE_BASE_ID", None)
-    table_id = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
     enabled = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_ENABLED", False)
-
     if not enabled:
         logger.info(
             "[company_registry] AIRTABLE_COMPANY_REGISTRY_ENABLED=false — sync pulado"
         )
         return {"ok": True, "status": "disabled"}
 
-    if not base_id or not table_id:
+    table_id = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
+    if not table_id:
         logger.warning(
-            "[company_registry] AIRTABLE_BASE_ID ou AIRTABLE_COMPANY_REGISTRY_TABLE_ID "
-            "nao configurados — sync pulado"
+            "[company_registry] AIRTABLE_COMPANY_REGISTRY_TABLE_ID nao configurado — sync pulado"
         )
         return {"ok": True, "status": "not_configured"}
 
-    client = _get_airtable_client()
-    if not client:
+    if not settings.AIRTABLE_API_KEY:
+        logger.warning("[company_registry] AIRTABLE_API_KEY nao configurada — sync pulado")
         return {"ok": False, "status": "no_api_key"}
+
+    try:
+        base_id = _base_id()
+    except RuntimeError as exc:
+        logger.warning("[company_registry] %s — sync pulado", exc)
+        return {"ok": False, "status": "no_base_id", "error": str(exc)}
 
     cd = payload.company_data
     legal = payload.legal_representative
@@ -151,10 +144,11 @@ def sync_company_registry_to_airtable(
     if payload.meta and payload.meta.submitted_at:
         fields["Enviado em"] = payload.meta.submitted_at
 
+    url = f"{AIRTABLE_API_URL}/{quote(base_id, safe='')}/{quote(table_id, safe='')}"
+
     try:
-        table = client.table(base_id, table_id)
-        record = table.create(fields)
-        record_id = record.get("id", "")
+        data = _request_json("POST", url, payload={"fields": fields})
+        record_id = data.get("id", "")
         logger.info(
             "[company_registry] Airtable record criado: %s | empresa: %s",
             record_id,
