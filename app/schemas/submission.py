@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 YesNo = Literal["yes", "no"]
 ReleaseType = Literal["single", "ep", "album"]
@@ -309,6 +309,13 @@ class DependentRepresentativePayload(BaseModel):
     name: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
+
+    @field_validator("same_as_legal", "same_as_contract", mode="before")
+    @classmethod
+    def coerce_empty_to_none(cls, v: object) -> object:
+        if v == "":
+            return None
+        return v
 
 
 class BankingDataPayload(BaseModel):
