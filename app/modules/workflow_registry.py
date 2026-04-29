@@ -40,6 +40,16 @@ WORKFLOW_REGISTRY: Dict[str, Dict[str, str]] = {
         "payload_builder": "external",
         "public_path_prefix": "/people",
     },
+    "company_registry": {
+        "label": "Cadastro de empresa",
+        "description": "Cadastro de clientes efetivos da Atabaque — dados fiscais, responsaveis e bancarios.",
+        "default_form_version": ACTIVE_WORKFLOW_FORM_VERSION,
+        "status": "active",
+        "renderer": "company_registry",
+        "template_factory": "company_registry",
+        "payload_builder": "company_registry",
+        "public_path_prefix": "/company",
+    },
 }
 
 
