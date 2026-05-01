@@ -11,6 +11,8 @@ from app.services.people_registry import (
     build_people_registry_response,
     create_people_registry_record_response,
     get_people_registry_record_response,
+    get_people_registry_record_by_edit_token_response,
+    update_people_registry_record_response,
 )
 
 router = APIRouter(prefix="/people-registry", tags=["people_registry"])
@@ -63,8 +65,41 @@ def get_people_registry_record(record_id: str):
     )
 
 
-# Commit 3 keeps people_registry scoped to:
-# - POST create only
-# - GET by record_id
-# - deterministic dedupe only
-# - no Airtable sync
+@router.get("/records/edit/{edit_token}", response_model=PeopleRegistryResponsePayload)
+def get_people_registry_record_by_edit_token(edit_token: str):
+    response = get_people_registry_record_by_edit_token_response(edit_token)
+
+    if response.ok:
+        return response
+
+    status_code = (
+        404
+        if response.error
+        and response.error.code == "people_registry_record_not_found"
+        else 500
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content=response.model_dump(mode="json"),
+    )
+
+
+@router.patch("/records/edit/{edit_token}", response_model=PeopleRegistryResponsePayload)
+def patch_people_registry_record(edit_token: str, payload: PeopleRegistryPayload):
+    response = update_people_registry_record_response(edit_token, payload)
+
+    if response.ok:
+        return response
+
+    status_code = (
+        404
+        if response.error
+        and response.error.code == "people_registry_record_not_found"
+        else 422
+        if response.status == "invalid"
+        else 500
+    )
+    return JSONResponse(
+        status_code=status_code,
+        content=response.model_dump(mode="json"),
+    )

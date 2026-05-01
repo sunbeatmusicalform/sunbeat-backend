@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
-from uuid import uuid4
+from uuid import uuid4, UUID
 
 from app.core.database import supabase
 
@@ -104,6 +104,7 @@ def build_people_registry_record_payload_from_row(
     return PeopleRegistryRecordPayload(
         record_id=str(row.get("id") or ""),
         airtable_sync_status=str(row.get("airtable_sync_status") or "pending"),
+        edit_token=row.get("edit_token") or None,
         created_at=str(row.get("created_at") or ""),
         updated_at=str(row.get("updated_at") or ""),
     )
@@ -350,6 +351,7 @@ def build_people_registry_insert_row(
         "airtable_base_id": None,
         "airtable_table_name": None,
         "airtable_record_id": None,
+        "edit_token": str(uuid4()),
         "created_at": now_iso,
         "updated_at": now_iso,
     }
@@ -395,6 +397,47 @@ def fetch_people_registry_record_by_id(record_id: str) -> Optional[Dict[str, Any
         .select("*")
         .eq("id", record_id)
         .limit(1)
+        .execute()
+    )
+    return _extract_first_row(result)
+
+
+def fetch_people_registry_record_by_edit_token(edit_token: str) -> Optional[Dict[str, Any]]:
+    result = (
+        supabase.table(PEOPLE_REGISTRY_TABLE)
+        .select("*")
+        .eq("edit_token", edit_token)
+        .limit(1)
+        .execute()
+    )
+    return _extract_first_row(result)
+
+
+def update_people_registry_record(
+    record_id: str,
+    prepared: "PeopleRegistryPreparedPayload",
+) -> Optional[Dict[str, Any]]:
+    now_iso = _utc_now_iso()
+    update_fields: Dict[str, Any] = {
+        "party_kind": prepared.party.party_kind,
+        "display_name": prepared.party.display_name,
+        "legal_name": prepared.party.legal_name,
+        "stage_name": prepared.party.stage_name,
+        "trade_name": prepared.party.trade_name,
+        "document_id": prepared.party.document_id,
+        "email_primary": prepared.contact.email_primary,
+        "phone_primary": prepared.contact.phone_primary,
+        "country": prepared.address.country,
+        "state_region": prepared.address.state_region,
+        "city": prepared.address.city,
+        "roles_json": list(prepared.party.roles),
+        "payload": prepared.model_dump(mode="json"),
+        "updated_at": now_iso,
+    }
+    result = (
+        supabase.table(PEOPLE_REGISTRY_TABLE)
+        .update(update_fields)
+        .eq("id", record_id)
         .execute()
     )
     return _extract_first_row(result)
@@ -543,5 +586,124 @@ def get_people_registry_record_response(record_id: str) -> PeopleRegistryRespons
         status="fetched",
         data=build_people_registry_prepared_payload_from_row(row),
         record=build_people_registry_record_payload_from_row(row),
+        error=None,
+    )
+
+
+def get_people_registry_record_by_edit_token_response(edit_token: str) -> PeopleRegistryResponsePayload:
+    try:
+        row = fetch_people_registry_record_by_edit_token(edit_token)
+    except Exception as exc:
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="error",
+            data=None,
+            record=None,
+            error=build_people_registry_error_detail(
+                code="people_registry_fetch_failed",
+                message=f"Could not fetch people registry record: {exc}",
+                stage="people_registry_fetch",
+                issues=[],
+            ),
+        )
+
+    if not row:
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="error",
+            data=None,
+            record=None,
+            error=build_people_registry_error_detail(
+                code="people_registry_record_not_found",
+                message="People registry record was not found.",
+                stage="people_registry_fetch",
+                issues=[],
+            ),
+        )
+
+    return PeopleRegistryResponsePayload(
+        ok=True,
+        status="fetched",
+        data=build_people_registry_prepared_payload_from_row(row),
+        record=build_people_registry_record_payload_from_row(row),
+        error=None,
+    )
+
+
+def update_people_registry_record_response(
+    edit_token: str,
+    payload: PeopleRegistryPayload,
+) -> PeopleRegistryResponsePayload:
+    # Validate payload first
+    validation_response = build_people_registry_response(payload)
+    if not validation_response.ok or not validation_response.data:
+        return validation_response
+
+    prepared = validation_response.data
+
+    # Resolve existing record by edit_token
+    try:
+        existing_row = fetch_people_registry_record_by_edit_token(edit_token)
+    except Exception as exc:
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="error",
+            data=prepared,
+            record=None,
+            error=build_people_registry_error_detail(
+                code="people_registry_fetch_failed",
+                message=f"Could not fetch people registry record for edit: {exc}",
+                stage="people_registry_edit_lookup",
+                issues=[],
+            ),
+        )
+
+    if not existing_row:
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="error",
+            data=prepared,
+            record=None,
+            error=build_people_registry_error_detail(
+                code="people_registry_record_not_found",
+                message="No people registry record found for this edit_token.",
+                stage="people_registry_edit_lookup",
+                issues=[],
+            ),
+        )
+
+    record_id = str(existing_row["id"])
+
+    try:
+        update_people_registry_record(record_id, prepared)
+    except Exception as exc:
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="error",
+            data=prepared,
+            record=None,
+            error=build_people_registry_error_detail(
+                code="people_registry_update_failed",
+                message=f"Could not update people registry record: {exc}",
+                stage="people_registry_update",
+                issues=[],
+            ),
+        )
+
+    try:
+        updated_row = fetch_people_registry_record_by_id(record_id)
+        if updated_row:
+            record = build_people_registry_record_payload_from_row(updated_row)
+            prepared = build_people_registry_prepared_payload_from_row(updated_row)
+        else:
+            record = build_people_registry_record_payload_from_row(existing_row)
+    except Exception:
+        record = build_people_registry_record_payload_from_row(existing_row)
+
+    return PeopleRegistryResponsePayload(
+        ok=True,
+        status="created",
+        data=prepared,
+        record=record,
         error=None,
     )

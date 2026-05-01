@@ -92,6 +92,7 @@ class PeopleRegistryPayload(BaseModel):
         default_factory=PeopleRegistryAdditionalInfoPayload
     )
     meta: PeopleRegistryMetaPayload = Field(default_factory=PeopleRegistryMetaPayload)
+    edit_token: Optional[str] = None
 
 
 class PeopleRegistryValidationIssuePayload(BaseModel):
@@ -133,6 +134,7 @@ class PeopleRegistryRecordPayload(BaseModel):
 
     record_id: str
     airtable_sync_status: PeopleRegistryAirtableSyncStatus = "pending"
+    edit_token: Optional[str] = None
     created_at: str
     updated_at: str
 
