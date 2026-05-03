@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.schemas.ai_gateway import (
@@ -631,4 +632,97 @@ async def chat(payload: AIChatRequestPayload) -> AIChatResponsePayload:
             estimated_cost_usd=estimated_cost["estimated_cost_usd"],
             handoff_required=False,
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Setup Copilot — internal endpoint, lightweight governance
+# Bypasses PHASE_ELIGIBLE_SURFACES and PROTECTED_WORKSPACES.
+# Protected by AI_COPILOT_SECRET shared secret header.
+# ---------------------------------------------------------------------------
+
+class _SetupCopilotRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=4000)
+    workspace_context: Optional[str] = Field(default=None, max_length=8000)
+    secret: Optional[str] = None
+
+
+class _SetupCopilotResponse(BaseModel):
+    ok: bool = True
+    text: str
+    used_fallback: bool = False
+
+
+@router.post("/copilot", response_model=_SetupCopilotResponse)
+async def copilot(payload: _SetupCopilotRequest) -> _SetupCopilotResponse:
+    """
+    Internal Setup Copilot endpoint.
+    - Not subject to surface phase restrictions or workspace protection.
+    - Requires AI_GATEWAY_ENABLED=true and a configured AI provider.
+    - Protected by AI_COPILOT_SECRET (if set).
+    """
+    if not ai_gateway_enabled():
+        raise HTTPException(
+            status_code=503,
+            detail=_error_detail(
+                code="gateway_disabled",
+                message="AI gateway is disabled.",
+                stage="copilot_gateway_disabled",
+            ),
+        )
+
+    expected_secret = getattr(settings, "AI_COPILOT_SECRET", None)
+    if expected_secret and payload.secret != expected_secret:
+        raise HTTPException(
+            status_code=403,
+            detail=_error_detail(
+                code="copilot_unauthorized",
+                message="Invalid or missing copilot secret.",
+                stage="copilot_auth",
+            ),
+        )
+
+    route = get_task_route("setup")
+    if not _route_has_available_provider(route):
+        raise HTTPException(
+            status_code=503,
+            detail=_error_detail(
+                code="route_provider_unavailable",
+                message="No configured AI provider is available.",
+                stage="copilot_provider_check",
+            ),
+        )
+
+    system_content = (
+        "You are the Sunbeat Setup Copilot — a read-only assistant for workspace "
+        "administrators. You help them understand their workspace configuration, "
+        "activate and configure workflows, and set up their forms correctly. "
+        "Be concise, specific, and operational. Only answer questions related to "
+        "workspace setup, form configuration, and workflow management. "
+        "Do not help with anything unrelated to the Sunbeat platform setup."
+    )
+    if payload.workspace_context:
+        system_content += f"\n\nCurrent workspace configuration (JSON):\n{payload.workspace_context}"
+
+    messages = [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": payload.message.strip()},
+    ]
+
+    try:
+        result = run_task_with_fallback(task="setup", messages=messages)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=_error_detail(
+                code="copilot_provider_failed",
+                message="AI provider request failed.",
+                stage="copilot_execution",
+            ),
+        ) from exc
+
+    return _SetupCopilotResponse(
+        ok=True,
+        text=result["text"],
+        used_fallback=bool(result.get("used_fallback", False)),
     )

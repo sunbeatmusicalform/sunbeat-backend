@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: str = Field(default="https://sunbeat.pro")
 
     AI_GATEWAY_ENABLED: bool = Field(default=False)
+    AI_COPILOT_SECRET: str | None = Field(default=None)
     AI_READINESS_ENABLED: bool = Field(default=False)
     AI_REQUEST_TIMEOUT_SECONDS: int = Field(default=30)
     AI_ENABLED_SURFACES: str = Field(default="")
