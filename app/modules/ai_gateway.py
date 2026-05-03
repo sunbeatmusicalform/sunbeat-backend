@@ -643,7 +643,7 @@ async def chat(payload: AIChatRequestPayload) -> AIChatResponsePayload:
 
 class _SetupCopilotRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
-    workspace_context: Optional[str] = Field(default=None, max_length=16000)
+    workspace_context: Optional[str] = Field(default=None)  # internal config data, no length cap
     secret: Optional[str] = None
 
 
