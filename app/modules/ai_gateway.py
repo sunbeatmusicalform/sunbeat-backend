@@ -123,7 +123,21 @@ def _get_budget_alert(workspace_slug: Optional[str]) -> Optional[Dict[str, Any]]
             .execute()
         )
         plan_id: str = (ws_row.data or {}).get("plan_id", "starter")
-        budget_limit = _AI_BUDGET_BRL.get(plan_id, _AI_BUDGET_BRL["starter"])
+
+        # V2 override: consultar workspace_plan_overrides.ai_monthly_budget_brl
+        # Prioridade: override > plano base > fallback "starter"
+        override_row = (
+            supabase.table("workspace_plan_overrides")
+            .select("ai_monthly_budget_brl")
+            .eq("workspace_slug", workspace_slug)
+            .maybe_single()
+            .execute()
+        )
+        override_budget = (override_row.data or {}).get("ai_monthly_budget_brl")
+        if override_budget is not None:
+            budget_limit = float(override_budget)
+        else:
+            budget_limit = _AI_BUDGET_BRL.get(plan_id, _AI_BUDGET_BRL["starter"])
 
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc)
