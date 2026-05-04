@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import time
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -8,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.core.database import supabase
 from app.schemas.ai_gateway import (
     AIChatRequestPayload,
     AIChatResponsePayload,
@@ -45,6 +47,111 @@ MAX_AI_MESSAGES = 20
 MAX_AI_MESSAGE_CHARACTERS = 4000
 MAX_AI_TOTAL_CHARACTERS = 12000
 MAX_SYSTEM_MESSAGES = 1
+
+# ---------------------------------------------------------------------------
+# AI V2 -- pricing & budget constants (policy: SUNBEAT_AI_POLICY_V1.md)
+# ---------------------------------------------------------------------------
+
+_COST_PER_TOKEN_BRL: Dict[str, Dict[str, float]] = {
+    "deepseek": {
+        "input":  0.70 / 1_000_000,
+        "output": 1.40 / 1_000_000,
+    },
+    "gemini": {
+        "input":   2.70 / 1_000_000,
+        "output": 22.50 / 1_000_000,
+    },
+}
+
+_AI_BUDGET_BRL: Dict[str, float] = {
+    "free":       2.0,
+    "starter":   10.0,
+    "pro":       30.0,
+    "enterprise": 120.0,
+}
+
+_BUDGET_ALERT_THRESHOLD = 0.70
+
+
+def _estimate_tokens(text: str, factor: float = 4.0) -> int:
+    return max(1, math.ceil(len(text) / factor))
+
+
+def _compute_cost_brl(*, provider: str, tokens_in: int, tokens_out: int) -> float:
+    profile = _COST_PER_TOKEN_BRL.get(provider, _COST_PER_TOKEN_BRL["deepseek"])
+    return (tokens_in * profile["input"]) + (tokens_out * profile["output"])
+
+
+def _log_ai_usage(
+    *,
+    workspace_slug: Optional[str],
+    provider: str,
+    model: str,
+    tokens_in: int,
+    tokens_out: int,
+    estimated_cost_usd: float,
+    estimated_cost_brl: float,
+    used_fallback: bool,
+    task: str = "setup",
+) -> None:
+    try:
+        supabase.table("ai_usage_log").insert({
+            "workspace_slug":     workspace_slug,
+            "surface":            "copilot",
+            "provider":           provider,
+            "model":              model,
+            "task":               task,
+            "tokens_in":          tokens_in,
+            "tokens_out":         tokens_out,
+            "estimated_cost_usd": round(estimated_cost_usd, 6),
+            "estimated_cost_brl": round(estimated_cost_brl, 4),
+            "used_fallback":      used_fallback,
+        }).execute()
+    except Exception:
+        pass
+
+
+def _get_budget_alert(workspace_slug: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not workspace_slug:
+        return None
+    try:
+        ws_row = (
+            supabase.table("workspaces")
+            .select("plan_id")
+            .eq("slug", workspace_slug)
+            .single()
+            .execute()
+        )
+        plan_id: str = (ws_row.data or {}).get("plan_id", "starter")
+        budget_limit = _AI_BUDGET_BRL.get(plan_id, _AI_BUDGET_BRL["starter"])
+
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat()
+
+        usage_row = (
+            supabase.table("ai_usage_log")
+            .select("estimated_cost_brl")
+            .eq("workspace_slug", workspace_slug)
+            .gte("created_at", month_start)
+            .execute()
+        )
+        rows = usage_row.data or []
+        used_brl = sum(float(r.get("estimated_cost_brl", 0)) for r in rows)
+        pct_used = used_brl / budget_limit if budget_limit > 0 else 0.0
+
+        if pct_used < _BUDGET_ALERT_THRESHOLD:
+            return None
+
+        return {
+            "pct_used":        round(pct_used * 100, 1),
+            "used_brl":        round(used_brl, 4),
+            "limit_brl":       budget_limit,
+            "plan_id":         plan_id,
+            "alert_threshold": int(_BUDGET_ALERT_THRESHOLD * 100),
+        }
+    except Exception:
+        return None
 
 
 def _error_detail(
@@ -644,6 +751,7 @@ async def chat(payload: AIChatRequestPayload) -> AIChatResponsePayload:
 class _SetupCopilotRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
     workspace_context: Optional[str] = Field(default=None)  # internal config data, no length cap
+    workspace_slug: Optional[str] = None                    # V2: usage log + budget_alert
     secret: Optional[str] = None
 
 
@@ -651,6 +759,9 @@ class _SetupCopilotResponse(BaseModel):
     ok: bool = True
     text: str
     used_fallback: bool = False
+    provider: str = ""
+    model: str = ""
+    budget_alert: Optional[Dict[str, Any]] = None
 
 
 @router.post("/copilot", response_model=_SetupCopilotResponse)
@@ -725,8 +836,49 @@ async def copilot(payload: _SetupCopilotRequest) -> _SetupCopilotResponse:
             ),
         ) from exc
 
+    # V2 -- metering
+    provider_name: str = result.get("provider", "deepseek")
+    model_name: str = result.get("model", "")
+    used_fallback: bool = bool(result.get("used_fallback", False))
+
+    input_text = system_content + " " + payload.message.strip()
+    output_text = result.get("text", "")
+    tokens_in = _estimate_tokens(input_text)
+    tokens_out = _estimate_tokens(output_text)
+    cost_brl = _compute_cost_brl(
+        provider=provider_name,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+    )
+    _usd_profiles: Dict[str, Dict[str, float]] = {
+        "deepseek": {"input": 0.14 / 1_000_000, "output": 0.28 / 1_000_000},
+        "gemini":   {"input": 0.54 / 1_000_000, "output": 4.50 / 1_000_000},
+    }
+    _usd_p = _usd_profiles.get(provider_name, _usd_profiles["deepseek"])
+    cost_usd = (tokens_in * _usd_p["input"]) + (tokens_out * _usd_p["output"])
+
+    ws_slug = (payload.workspace_slug or "").strip() or None
+
+    # V2 -- persistir log (fire-and-forget)
+    _log_ai_usage(
+        workspace_slug=ws_slug,
+        provider=provider_name,
+        model=model_name,
+        tokens_in=tokens_in,
+        tokens_out=tokens_out,
+        estimated_cost_usd=cost_usd,
+        estimated_cost_brl=cost_brl,
+        used_fallback=used_fallback,
+    )
+
+    # V2 -- budget_alert
+    budget_alert = _get_budget_alert(ws_slug)
+
     return _SetupCopilotResponse(
         ok=True,
         text=result["text"],
-        used_fallback=bool(result.get("used_fallback", False)),
+        used_fallback=used_fallback,
+        provider=provider_name,
+        model=model_name,
+        budget_alert=budget_alert,
     )
