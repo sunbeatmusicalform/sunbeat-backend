@@ -61,7 +61,6 @@ def _post_resend(
     subject: str,
     html: str,
     edit_url: Optional[str] = None,
-    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not settings.RESEND_API_KEY:
         raise RuntimeError("RESEND_API_KEY is not configured")
@@ -73,16 +72,12 @@ def _post_resend(
     if not recipients:
         raise RuntimeError("At least one recipient is required")
 
-    headers = {
-        "Authorization": f"Bearer {settings.RESEND_API_KEY}",
-        "Content-Type": "application/json",
-    }
-    if idempotency_key:
-        headers["Idempotency-Key"] = idempotency_key
-
     response = requests.post(
         "https://api.resend.com/emails",
-        headers=headers,
+        headers={
+            "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+            "Content-Type": "application/json",
+        },
         json={
             "from": settings.RESEND_FROM_EMAIL,
             "to": recipients,
@@ -179,13 +174,86 @@ def send_edit_link_email(
     days_until_release: Optional[int] = None,
     recipient_name: Optional[str] = None,
     workspace_slug: str = "atabaque",
+    workflow_type: Optional[str] = None,
 ) -> Dict[str, Any]:
+    # [MT-OBS] PR-01 — log de workspace para observabilidade multi-tenant
+    logger.info(
+        "send_edit_link_email workspace_slug=%s to_email=%s project_title=%s workflow_type=%s",
+        workspace_slug,
+        to_email,
+        project_title,
+        workflow_type,
+    )
+
     edit_url = build_edit_url(
         edit_token=edit_token,
         workspace_slug=workspace_slug,
     )
 
     safe_project_title = (project_title or "").strip() or "Projeto sem titulo"
+    greeting = (
+        f"Ola, {escape(recipient_name)}!"
+        if recipient_name
+        else "Ola!"
+    )
+
+    # -- rights_clearance --
+    if workflow_type == "rights_clearance":
+        subject = f"Solicitacao de clearance recebida - {safe_project_title}"
+        html = _wrap_email_html(
+            f"""
+        <p>{greeting}</p>
+        <p>Obrigada pelo envio.</p>
+        <p>Recebemos a sua solicitacao de clearance para
+        <strong>{escape(safe_project_title)}</strong>.</p>
+        <p>Nossa equipe vai analisar as informacoes enviadas e entrar em contato
+        se precisar de algo adicional.</p>
+        <p>
+          Se precisar revisar ou atualizar as informacoes enviadas, use o link abaixo:
+        </p>
+        <p>
+          <a href="{edit_url}" style="color: #2563eb; text-decoration: none;">
+            {edit_url}
+          </a>
+        </p>
+        <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
+            """
+        )
+        return _post_resend(
+            to_email=to_email,
+            subject=subject,
+            html=html,
+            edit_url=edit_url,
+        ) | {"to_email": to_email}
+
+    # -- company_registry --
+    if workflow_type == "company_registry":
+        subject = f"Cadastro recebido - {safe_project_title}"
+        html = _wrap_email_html(
+            f"""
+        <p>{greeting}</p>
+        <p>Obrigada pelo envio.</p>
+        <p>Recebemos o cadastro de <strong>{escape(safe_project_title)}</strong>.</p>
+        <p>Nossa equipe vai revisar as informacoes e entrar em contato em breve.</p>
+        <p>
+          Se precisar revisar ou atualizar os dados enviados, use o link abaixo:
+        </p>
+        <p>
+          <a href="{edit_url}" style="color: #2563eb; text-decoration: none;">
+            {edit_url}
+          </a>
+        </p>
+        <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
+            """
+        )
+        return _post_resend(
+            to_email=to_email,
+            subject=subject,
+            html=html,
+            edit_url=edit_url,
+        ) | {"to_email": to_email}
+
+    # -- release_intake (default) — comportamento original preservado --
     safe_release_date = (release_date or "").strip() or "data nao informada"
     safe_primary_artist = (primary_artist or "").strip() or "artista nao informado"
 
@@ -194,11 +262,6 @@ def send_edit_link_email(
         f"{safe_release_date} + {safe_primary_artist}"
     )
 
-    greeting = (
-        f"Ola, {escape(recipient_name)}!"
-        if recipient_name
-        else "Ola!"
-    )
     project_line = (
         f"Recebemos o envio do lancamento "
         f"<strong>{escape(safe_project_title)}</strong>."
@@ -245,6 +308,14 @@ def send_draft_link_email(
     recipient_name: Optional[str] = None,
     workspace_slug: str = "atabaque",
 ) -> Dict[str, Any]:
+    # [MT-OBS] PR-01 — log de workspace para observabilidade multi-tenant
+    logger.info(
+        "send_draft_link_email workspace_slug=%s to_email=%s draft_token=%s",
+        workspace_slug,
+        to_email,
+        draft_token,
+    )
+
     draft_url = build_draft_resume_url(
         draft_token=draft_token,
         workspace_slug=workspace_slug,
@@ -294,7 +365,6 @@ def send_first_stage_completion_email(
     draft_token: str,
     current_step: Optional[str],
     workspace_slug: str = "atabaque",
-    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     recipients = _normalize_recipients(to_emails)
     if not recipients:
@@ -335,21 +405,11 @@ def send_first_stage_completion_email(
         """
     )
 
-    email_result = _post_resend(
+    return _post_resend(
         to_email=recipients,
         subject=subject,
         html=html,
-        idempotency_key=idempotency_key,
-    )
-    email_status = (
-        "sent"
-        if email_result.get("provider_message_id")
-        else "sent_without_message_id"
-    )
-    return email_result | {
-        "draft_url": draft_url,
-        "status": email_status,
-    }
+    ) | {"draft_url": draft_url}
 
 
 def send_submission_summary_email(
@@ -365,7 +425,6 @@ def send_submission_summary_email(
     focus_track_name: Optional[str],
     track_titles: Iterable[str],
     edit_url: str,
-    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     recipients = _normalize_recipients(to_emails)
     if not recipients:
@@ -423,5 +482,4 @@ def send_submission_summary_email(
         to_email=recipients,
         subject=subject,
         html=html,
-        idempotency_key=idempotency_key,
     )
