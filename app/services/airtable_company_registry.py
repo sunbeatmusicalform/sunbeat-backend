@@ -69,35 +69,18 @@ def _resolve_rep_email(rep: Any, legal: Any, contract: Any = None) -> str:
     return getattr(rep, "email", "") or ""
 
 
-def sync_company_registry_to_airtable(
-    payload: CompanyRegistrySubmissionPayload,
-) -> Dict[str, Any]:
+def _build_public_fields(payload: CompanyRegistrySubmissionPayload) -> Dict[str, Any]:
     """
-    Cria um registro na tabela Company Registry do Airtable.
+    Constroi o dict de campos PUBLICOS para o Airtable.
 
-    Retorna dict com ok, status, record_id.
+    Inclui: identificacao da empresa, endereco, responsaveis (legal, contrato,
+    financeiro), dados bancarios e workspace_slug.
+
+    NAO inclui campos submit-only (draft_token, meta.submitted_at) nem campos
+    internos da operacao (datas de contrato, status, financeiro interno etc.).
+    Campos submit-only sao adicionados apenas em sync_company_registry_to_airtable().
+    Campos internos nunca entram no payload publico.
     """
-    base_id = getattr(settings, "AIRTABLE_BASE_ID", None)
-    table_id = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
-    enabled = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_ENABLED", False)
-
-    if not enabled:
-        logger.info(
-            "[company_registry] AIRTABLE_COMPANY_REGISTRY_ENABLED=false — sync pulado"
-        )
-        return {"ok": True, "status": "disabled"}
-
-    if not base_id or not table_id:
-        logger.warning(
-            "[company_registry] AIRTABLE_BASE_ID ou AIRTABLE_COMPANY_REGISTRY_TABLE_ID "
-            "nao configurados — sync pulado"
-        )
-        return {"ok": True, "status": "not_configured"}
-
-    client = _get_airtable_client()
-    if not client:
-        return {"ok": False, "status": "no_api_key"}
-
     cd = payload.company_data
     legal = payload.legal_representative
     contract = payload.contract_representative
@@ -127,11 +110,11 @@ def sync_company_registry_to_airtable(
         "Resp. Legal - Nome": legal.name,
         "Resp. Legal - Telefone": str(legal.phone),
         "Resp. Legal - Email": str(legal.email),
-        # Responsavel pelo contrato
+        # Responsavel pelo contrato (com fallback para legal)
         "Resp. Contrato - Nome": contract_name,
         "Resp. Contrato - Telefone": contract_phone,
         "Resp. Contrato - Email": contract_email,
-        # Responsavel financeiro
+        # Responsavel financeiro (com fallback para legal/contrato)
         "Resp. Financeiro - Nome": financial_name,
         "Resp. Financeiro - Telefone": financial_phone,
         "Resp. Financeiro - Email": financial_email,
@@ -142,12 +125,49 @@ def sync_company_registry_to_airtable(
         "Tipo de conta": "Conta corrente" if bank.account_type == "corrente" else "Conta poupanca",
         # Meta
         "Workspace": payload.workspace_slug,
-        "Draft token": payload.draft_token,
     }
 
     if bank.pix_key:
         fields["Chave Pix"] = bank.pix_key
 
+    return fields
+
+
+def sync_company_registry_to_airtable(
+    payload: CompanyRegistrySubmissionPayload,
+) -> Dict[str, Any]:
+    """
+    Cria um registro na tabela Company Registry do Airtable.
+
+    Sincroniza campos publicos + campos submit-only (draft_token, submitted_at).
+    Retorna dict com ok, status, record_id.
+    """
+    base_id = getattr(settings, "AIRTABLE_BASE_ID", None)
+    table_id = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
+    enabled = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_ENABLED", False)
+
+    if not enabled:
+        logger.info(
+            "[company_registry] AIRTABLE_COMPANY_REGISTRY_ENABLED=false — sync pulado"
+        )
+        return {"ok": True, "status": "disabled"}
+
+    if not base_id or not table_id:
+        logger.warning(
+            "[company_registry] AIRTABLE_BASE_ID ou AIRTABLE_COMPANY_REGISTRY_TABLE_ID "
+            "nao configurados — sync pulado"
+        )
+        return {"ok": True, "status": "not_configured"}
+
+    client = _get_airtable_client()
+    if not client:
+        return {"ok": False, "status": "no_api_key"}
+
+    # Campos publicos (identificacao, endereco, responsaveis, bancarios)
+    fields = _build_public_fields(payload)
+
+    # Campos submit-only: gravados apenas no POST inicial, nunca no edit/resubmit
+    fields["Draft token"] = payload.draft_token
     if payload.meta and payload.meta.submitted_at:
         fields["Enviado em"] = payload.meta.submitted_at
 
@@ -200,48 +220,9 @@ def update_company_registry_in_airtable(
     if not client:
         return {"ok": False, "status": "no_api_key"}
 
-    cd = payload.company_data
-    legal = payload.legal_representative
-    contract = payload.contract_representative
-    financial = payload.financial_representative
-    bank = payload.banking_data
-
-    contract_name = _resolve_rep_name(contract, legal)
-    contract_phone = _resolve_rep_phone(contract, legal)
-    contract_email = _resolve_rep_email(contract, legal)
-
-    financial_name = _resolve_rep_name(financial, legal, contract)
-    financial_phone = _resolve_rep_phone(financial, legal, contract)
-    financial_email = _resolve_rep_email(financial, legal, contract)
-
-    # Apenas campos publicos — campos internos sao preenchidos manualmente no Airtable
-    fields: Dict[str, Any] = {
-        "Tipo de documento": cd.document_type.upper(),
-        "Numero do documento": cd.document_number,
-        "Nome fantasia": cd.fantasy_name,
-        "Razao social": cd.legal_name,
-        "Endereco": cd.address,
-        "Cidade": cd.city,
-        "Estado": cd.state,
-        "CEP": cd.zip_code,
-        "Resp. Legal - Nome": legal.name,
-        "Resp. Legal - Telefone": str(legal.phone),
-        "Resp. Legal - Email": str(legal.email),
-        "Resp. Contrato - Nome": contract_name,
-        "Resp. Contrato - Telefone": contract_phone,
-        "Resp. Contrato - Email": contract_email,
-        "Resp. Financeiro - Nome": financial_name,
-        "Resp. Financeiro - Telefone": financial_phone,
-        "Resp. Financeiro - Email": financial_email,
-        "Banco": bank.bank_name,
-        "Agencia": bank.agency,
-        "Conta": bank.account,
-        "Tipo de conta": "Conta corrente" if bank.account_type == "corrente" else "Conta poupanca",
-        "Workspace": payload.workspace_slug,
-    }
-
-    if bank.pix_key:
-        fields["Chave Pix"] = bank.pix_key
+    # Apenas campos publicos — draft_token e submitted_at sao submit-only e nao
+    # devem ser sobrescritos no edit. Campos internos nunca entram aqui.
+    fields = _build_public_fields(payload)
 
     try:
         table = client.table(base_id, table_id)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 YesNo = Literal["yes", "no"]
 ReleaseType = Literal["single", "ep", "album"]
@@ -281,6 +281,8 @@ class RightsClearanceSubmissionPayload(BaseModel):
 
 
 class CompanyDataPayload(BaseModel):
+    """Dados de identificacao da empresa — PUBLICO: preenchido pelo cliente no formulario."""
+
     model_config = ConfigDict(extra="ignore")
 
     document_type: Literal["cpf", "cnpj"]
@@ -294,6 +296,8 @@ class CompanyDataPayload(BaseModel):
 
 
 class RepresentativePayload(BaseModel):
+    """Responsavel obrigatorio — PUBLICO: nome, telefone e email sempre exigidos."""
+
     model_config = ConfigDict(extra="ignore")
 
     name: str = Field(..., min_length=1)
@@ -302,6 +306,11 @@ class RepresentativePayload(BaseModel):
 
 
 class DependentRepresentativePayload(BaseModel):
+    """
+    Responsavel com reaproveitamento — PUBLICO: pode herdar dados do responsavel legal
+    ou do responsavel pelo contrato via same_as_legal / same_as_contract.
+    """
+
     model_config = ConfigDict(extra="ignore")
 
     same_as_legal: Optional[YesNo] = None
@@ -310,15 +319,10 @@ class DependentRepresentativePayload(BaseModel):
     phone: Optional[str] = None
     email: Optional[str] = None
 
-    @field_validator("same_as_legal", "same_as_contract", mode="before")
-    @classmethod
-    def coerce_empty_to_none(cls, v: object) -> object:
-        if v == "":
-            return None
-        return v
-
 
 class BankingDataPayload(BaseModel):
+    """Dados bancarios — PUBLICO: preenchido pelo cliente e sincronizado com Airtable."""
+
     model_config = ConfigDict(extra="ignore")
 
     bank_name: str = Field(..., min_length=1)
@@ -329,18 +333,45 @@ class BankingDataPayload(BaseModel):
 
 
 class CompanyRegistrySubmissionPayload(BaseModel):
+    """
+    Payload completo de cadastro de empresa (company_registry).
+
+    Fronteira publico / interno:
+    ─────────────────────────────────────────────────────────
+    PUBLICO (vem do formulario, edita via edit_token, sincroniza no Airtable):
+      company_data, legal_representative, contract_representative,
+      financial_representative, banking_data
+
+    SUBMIT-ONLY (enviado apenas no POST inicial, NAO reenviado no edit):
+      draft_token  → gravado no Airtable como "Draft token"
+      meta.submitted_at → gravado no Airtable como "Enviado em"
+
+    INTERNO (nao existe no payload publico — preenchido manualmente no Airtable):
+      Datas de contrato, status do contrato, resumo de servicos,
+      tag do projeto, valor, vencimento, lancamentos mensais,
+      extras, repasses e comprovantes.
+    ─────────────────────────────────────────────────────────
+    """
+
     model_config = ConfigDict(extra="ignore")
 
-    draft_token: str
+    # ── submit-only ──────────────────────────────────────────────────────────
+    draft_token: str  # gravado no Airtable so no POST inicial
+
+    # ── meta ─────────────────────────────────────────────────────────────────
     workspace_slug: str
     workflow_type: WorkflowType = "company_registry"
-    edit_token: Optional[str] = None
+    edit_token: Optional[str] = None  # presente apenas no fluxo de edicao
+
+    # ── campos publicos (submit + edit + airtable sync) ───────────────────────
     company_data: CompanyDataPayload
     legal_representative: RepresentativePayload
     contract_representative: DependentRepresentativePayload
     financial_representative: DependentRepresentativePayload
     banking_data: BankingDataPayload
-    meta: Optional[SubmissionMetaPayload] = None
+
+    # ── meta de envio (submit-only no Airtable) ───────────────────────────────
+    meta: Optional[SubmissionMetaPayload] = None  # meta.submitted_at → "Enviado em"
 
 
 WorkflowSubmissionPayload = (
