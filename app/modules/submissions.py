@@ -33,6 +33,7 @@ from app.services.airtable import (
 from app.services.airtable_company_registry import sync_company_registry_to_airtable, update_company_registry_in_airtable
 from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable
 from app.services.email import send_edit_link_email, send_submission_summary_email
+from app.services.workspace_config import get_workflow_settings
 from app.services.google_drive import sync_clearance_to_google_drive, sync_submission_to_google_drive
 
 logger = logging.getLogger("sunbeat.submissions")
@@ -2314,18 +2315,25 @@ def _handle_clearance_edit_resubmit(
         )
         raise HTTPException(status_code=500, detail="Failed to update submission")
 
-    try:
-        send_edit_link_email(
-            to_email=payload.requester_identification.requester_email,
-            recipient_name=payload.requester_identification.requester_name,
-            edit_token=edit_token,
-            project_title=payload.project_context.project_title,
-            workspace_slug=payload.workspace_slug,
-            workflow_type="rights_clearance",
-        )
-    except Exception:
-        logger.warning(
-            "Clearance edit resubmit email failed submission_id=%s",
+    _clearance_cfg = get_workflow_settings(payload.workspace_slug, "rights_clearance")
+    if _clearance_cfg.get("edit_email_enabled", True):
+        try:
+            send_edit_link_email(
+                to_email=payload.requester_identification.requester_email,
+                recipient_name=payload.requester_identification.requester_name,
+                edit_token=edit_token,
+                project_title=payload.project_context.project_title,
+                workspace_slug=payload.workspace_slug,
+                workflow_type="rights_clearance",
+            )
+        except Exception:
+            logger.warning(
+                "Clearance edit resubmit email failed submission_id=%s",
+                submission_id,
+            )
+    else:
+        logger.info(
+            "Clearance edit resubmit email skipped by config submission_id=%s",
             submission_id,
         )
 
@@ -2370,18 +2378,25 @@ def _handle_company_registry_edit_resubmit(
         )
         raise HTTPException(status_code=500, detail="Failed to update submission")
 
-    try:
-        send_edit_link_email(
-            to_email=payload.legal_representative.email,
-            recipient_name=payload.legal_representative.name,
-            edit_token=edit_token,
-            project_title=payload.company_data.fantasy_name,
-            workspace_slug=payload.workspace_slug,
-            workflow_type="company_registry",
-        )
-    except Exception:
-        logger.warning(
-            "Company registry edit resubmit email failed submission_id=%s",
+    _company_cfg = get_workflow_settings(payload.workspace_slug, "company_registry")
+    if _company_cfg.get("edit_email_enabled", True):
+        try:
+            send_edit_link_email(
+                to_email=payload.legal_representative.email,
+                recipient_name=payload.legal_representative.name,
+                edit_token=edit_token,
+                project_title=payload.company_data.fantasy_name,
+                workspace_slug=payload.workspace_slug,
+                workflow_type="company_registry",
+            )
+        except Exception:
+            logger.warning(
+                "Company registry edit resubmit email failed submission_id=%s",
+                submission_id,
+            )
+    else:
+        logger.info(
+            "Company registry edit resubmit email skipped by config submission_id=%s",
             submission_id,
         )
 
@@ -2641,8 +2656,20 @@ def create_submission(
         "workflow_type" in inspect.signature(send_edit_link_email).parameters
     )
 
-    if (
-        _submission_workflow_type(validated_payload) in (RIGHTS_CLEARANCE_WORKFLOW_TYPE, "company_registry")
+    _wf_type = _submission_workflow_type(validated_payload)
+    _wf_cfg = get_workflow_settings(validated_payload.workspace_slug, _wf_type)
+
+    if not _wf_cfg.get("post_submit_email_enabled", True):
+        email_status = "skipped_config"
+        _update_submission_email_skipped(submission_id, "post_submit_email_enabled=false")
+        logger.info(
+            "Post-submit email skipped by workspace config submission_id=%s workspace=%s workflow=%s",
+            submission_id,
+            validated_payload.workspace_slug,
+            _wf_type,
+        )
+    elif (
+        _wf_type in (RIGHTS_CLEARANCE_WORKFLOW_TYPE, "company_registry")
         and not supports_workflow_routed_edit_email
     ):
         email_status = "skipped"
@@ -2654,7 +2681,7 @@ def create_submission(
         logger.warning(
             "Skipping post-submit email submission_id=%s workflow_type=%s because email.py does not support workflow routing yet",
             submission_id,
-            _submission_workflow_type(validated_payload),
+            _wf_type,
         )
     else:
         try:
