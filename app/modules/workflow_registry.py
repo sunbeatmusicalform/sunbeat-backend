@@ -9,6 +9,8 @@ LEGACY_RELEASE_INTAKE_FORM_VERSION = "legacy_v1"
 ACTIVE_WORKFLOW_FORM_VERSION = "v1"
 PLANNED_WORKFLOW_FORM_VERSION = "draft_v1"
 
+COMPANY_REGISTRY_WORKFLOW_TYPE = "company_registry"
+
 WORKFLOW_REGISTRY: Dict[str, Dict[str, str]] = {
     DEFAULT_WORKFLOW_TYPE: {
         "label": "Release intake",
@@ -30,25 +32,25 @@ WORKFLOW_REGISTRY: Dict[str, Dict[str, str]] = {
         "payload_builder": "rights_clearance",
         "public_path_prefix": "/clearance",
     },
-    PEOPLE_REGISTRY_WORKFLOW_TYPE: {
-        "label": "People registry",
-        "description": "Placeholder inicial para o workflow de cadastro de pessoas fisicas e juridicas.",
-        "default_form_version": PLANNED_WORKFLOW_FORM_VERSION,
-        "status": "planned",
-        "renderer": "external",
-        "template_factory": "external",
-        "payload_builder": "external",
-        "public_path_prefix": "/people",
-    },
-    "company_registry": {
-        "label": "Cadastro de empresa",
-        "description": "Cadastro de clientes efetivos da Atabaque — dados fiscais, responsaveis e bancarios.",
+    COMPANY_REGISTRY_WORKFLOW_TYPE: {
+        "label": "Company registry",
+        "description": "Cadastro de clientes efetivos da Atabaque — camada contratual, financeira e operacional.",
         "default_form_version": ACTIVE_WORKFLOW_FORM_VERSION,
         "status": "active",
         "renderer": "company_registry",
         "template_factory": "company_registry",
         "payload_builder": "company_registry",
         "public_path_prefix": "/company",
+    },
+    PEOPLE_REGISTRY_WORKFLOW_TYPE: {
+        "label": "People registry",
+        "description": "Cadastro de pessoas fisicas e juridicas com arquitetura propria (router /people-registry).",
+        "default_form_version": PLANNED_WORKFLOW_FORM_VERSION,
+        "status": "active",
+        "renderer": "external",
+        "template_factory": "external",
+        "payload_builder": "external",
+        "public_path_prefix": "/people",
     },
 }
 
