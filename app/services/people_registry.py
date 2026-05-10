@@ -691,6 +691,16 @@ def update_people_registry_record_response(
         )
 
     try:
+        sync_people_registry_record_to_airtable(
+            record_id=record_id,
+            prepared=prepared,
+        )
+    except Exception:
+        # Non-fatal: Supabase is the canonical store; Airtable sync failure
+        # must not block the PATCH response.
+        pass
+
+    try:
         updated_row = fetch_people_registry_record_by_id(record_id)
         if updated_row:
             record = build_people_registry_record_payload_from_row(updated_row)
