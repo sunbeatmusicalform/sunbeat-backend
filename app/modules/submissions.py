@@ -138,6 +138,17 @@ def _queue_google_drive_sync(
         )
         return {"ok": True, "status": "skipped"}
 
+    _drive_wf_type = "release_intake" if is_release_intake else "rights_clearance"
+    _drive_cfg = get_workflow_settings(payload.workspace_slug, _drive_wf_type)
+    if not _drive_cfg.get("drive_sync_enabled", True):
+        logger.info(
+            "Google Drive sync skipped by workspace config submission_id=%s workspace=%s workflow=%s",
+            submission_id,
+            payload.workspace_slug,
+            _drive_wf_type,
+        )
+        return {"ok": True, "status": "skipped_config"}
+
     drive_payload = (
         payload.model_copy(deep=True)
         if hasattr(payload, "model_copy")
