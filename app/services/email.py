@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import requests
 
 from app.core.config import settings
+from app.services.workspace_config import get_email_extra_config
 
 logger = logging.getLogger("sunbeat.email")
 
@@ -61,6 +62,8 @@ def _post_resend(
     subject: str,
     html: str,
     edit_url: Optional[str] = None,
+    cc: Optional[List[str]] = None,
+    bcc: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     if not settings.RESEND_API_KEY:
         raise RuntimeError("RESEND_API_KEY is not configured")
@@ -83,6 +86,8 @@ def _post_resend(
             "to": recipients,
             "subject": subject,
             "html": html,
+            **( {"cc": cc} if cc else {} ),
+            **( {"bcc": bcc} if bcc else {} ),
         },
         timeout=30,
     )
@@ -185,6 +190,11 @@ def send_edit_link_email(
         workflow_type,
     )
 
+    # Resolver cc/bcc via extra_settings.email (Etapa C)
+    _email_extra = get_email_extra_config(workspace_slug, workflow_type or "release_intake")
+    _cc = _email_extra.get("cc_addresses") or None
+    _bcc = _email_extra.get("bcc_addresses") or None
+
     edit_url = build_edit_url(
         edit_token=edit_token,
         workspace_slug=workspace_slug,
@@ -224,6 +234,8 @@ def send_edit_link_email(
             subject=subject,
             html=html,
             edit_url=edit_url,
+            cc=_cc,
+            bcc=_bcc,
         ) | {"to_email": to_email}
 
     # -- company_registry --
@@ -251,6 +263,8 @@ def send_edit_link_email(
             subject=subject,
             html=html,
             edit_url=edit_url,
+            cc=_cc,
+            bcc=_bcc,
         ) | {"to_email": to_email}
 
     # -- release_intake (default) — comportamento original preservado --
@@ -297,6 +311,8 @@ def send_edit_link_email(
         subject=subject,
         html=html,
         edit_url=edit_url,
+        cc=_cc,
+        bcc=_bcc,
     ) | {"to_email": to_email}
 
 
