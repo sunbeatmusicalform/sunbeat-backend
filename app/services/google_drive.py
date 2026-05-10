@@ -16,6 +16,7 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
 from app.core.config import settings
+from app.services.workspace_config import get_drive_extra_config
 
 logger = logging.getLogger("sunbeat.google_drive")
 _DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive"]
@@ -629,11 +630,22 @@ def sync_clearance_to_google_drive(payload: Any) -> Dict[str, Any]:
 
         # Musical formats: music_release_clearance_intake, music_project_track
         is_musical = clearance_format in ("music_release_clearance_intake", "music_project_track")
-        root_folder_id = (
-            settings.GOOGLE_DRIVE_CLEARANCE_MUSICAL_ROOT_FOLDER_ID
-            if is_musical
-            else settings.GOOGLE_DRIVE_CLEARANCE_NON_MUSICAL_ROOT_FOLDER_ID
-        ) or settings.GOOGLE_DRIVE_ROOT_FOLDER_ID
+
+        # Resolve root folder: extra_settings per workspace → env var → global fallback
+        _workspace_slug = str(getattr(payload, "workspace_slug", "") or "").strip()
+        _drive_extra = get_drive_extra_config(_workspace_slug, "rights_clearance") if _workspace_slug else {}
+
+        if is_musical:
+            root_folder_id = (
+                _drive_extra.get("clearance_musical_root_override")
+                or settings.GOOGLE_DRIVE_CLEARANCE_MUSICAL_ROOT_FOLDER_ID
+            )
+        else:
+            root_folder_id = (
+                _drive_extra.get("clearance_nonmusical_root_override")
+                or settings.GOOGLE_DRIVE_CLEARANCE_NON_MUSICAL_ROOT_FOLDER_ID
+            )
+        root_folder_id = root_folder_id or settings.GOOGLE_DRIVE_ROOT_FOLDER_ID
 
         if not root_folder_id:
             raise RuntimeError("Google Drive root folder for clearance is not configured")
