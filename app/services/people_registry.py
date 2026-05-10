@@ -15,6 +15,7 @@ from app.schemas.people_registry import (
     PeopleRegistryResponsePayload,
     PeopleRegistryValidationIssuePayload,
 )
+from app.services.workspace_config import get_workflow_settings
 from app.services.people_registry_airtable_sync import (
     sync_people_registry_record_to_airtable,
 )
@@ -525,14 +526,22 @@ def create_people_registry_record_response(
             ),
         )
 
-    try:
-        sync_people_registry_record_to_airtable(
-            record_id=record.record_id,
-            prepared=prepared,
+    _pr_cfg = get_workflow_settings(prepared.workspace_slug, "people_registry")
+    if _pr_cfg.get("airtable_sync_enabled", True):
+        try:
+            sync_people_registry_record_to_airtable(
+                record_id=record.record_id,
+                prepared=prepared,
+            )
+        except Exception:
+            # Preserve Supabase as the canonical write even if the Airtable hook fails unexpectedly.
+            pass
+    else:
+        logger.info(
+            "Airtable sync skipped by workspace config people_registry record_id=%s workspace=%s",
+            record.record_id,
+            prepared.workspace_slug,
         )
-    except Exception:
-        # Preserve Supabase as the canonical write even if the Airtable hook fails unexpectedly.
-        pass
 
     try:
         persisted_row = fetch_people_registry_record_by_id(record.record_id)
@@ -690,15 +699,23 @@ def update_people_registry_record_response(
             ),
         )
 
-    try:
-        sync_people_registry_record_to_airtable(
-            record_id=record_id,
-            prepared=prepared,
+    _pr_edit_cfg = get_workflow_settings(prepared.workspace_slug, "people_registry")
+    if _pr_edit_cfg.get("airtable_sync_enabled", True):
+        try:
+            sync_people_registry_record_to_airtable(
+                record_id=record_id,
+                prepared=prepared,
+            )
+        except Exception:
+            # Non-fatal: Supabase is the canonical store; Airtable sync failure
+            # must not block the PATCH response.
+            pass
+    else:
+        logger.info(
+            "Airtable sync skipped by workspace config people_registry record_id=%s workspace=%s",
+            record_id,
+            prepared.workspace_slug,
         )
-    except Exception:
-        # Non-fatal: Supabase is the canonical store; Airtable sync failure
-        # must not block the PATCH response.
-        pass
 
     try:
         updated_row = fetch_people_registry_record_by_id(record_id)

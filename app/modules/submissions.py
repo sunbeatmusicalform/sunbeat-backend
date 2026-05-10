@@ -2199,22 +2199,30 @@ def _update_release_submission(
         payload=payload_dump,
     )
 
+    _ri_cfg = get_workflow_settings(payload.workspace_slug, "release_intake")
     airtable_result: Optional[Dict[str, Any]] = None
     airtable_error: Optional[str] = None
-    try:
-        airtable_result = _sync_airtable(
-            payload=payload,
-            submission_id=submission_id,
-            edit_token=str(existing_row.get("edit_token") or payload.edit_token or ""),
-        )
-        _update_submission_airtable_success(
+    if _ri_cfg.get("airtable_sync_enabled", True):
+        try:
+            airtable_result = _sync_airtable(
+                payload=payload,
+                submission_id=submission_id,
+                edit_token=str(existing_row.get("edit_token") or payload.edit_token or ""),
+            )
+            _update_submission_airtable_success(
+                submission_id,
+                airtable_result["airtable_project"]["id"],
+            )
+        except Exception as exc:
+            airtable_error = str(exc)
+            _update_submission_airtable_failed(submission_id, airtable_error)
+            logger.exception("Airtable sync failed during submission update")
+    else:
+        logger.info(
+            "Airtable sync skipped by workspace config submission_id=%s workspace=%s workflow=release_intake",
             submission_id,
-            airtable_result["airtable_project"]["id"],
+            payload.workspace_slug,
         )
-    except Exception as exc:
-        airtable_error = str(exc)
-        _update_submission_airtable_failed(submission_id, airtable_error)
-        logger.exception("Airtable sync failed during submission update")
 
     updated_row = dict(existing_row)
     updated_row.update(updated_rows[0])
@@ -2339,7 +2347,14 @@ def _handle_clearance_edit_resubmit(
 
     airtable_record_id = str(existing_row.get("airtable_project_id") or "").strip()
     airtable_result: str = "skipped_no_record_id"
-    if airtable_record_id:
+    if not _clearance_cfg.get("airtable_sync_enabled", True):
+        airtable_result = "skipped_config"
+        logger.info(
+            "Airtable sync skipped by workspace config submission_id=%s workspace=%s workflow=rights_clearance",
+            submission_id,
+            payload.workspace_slug,
+        )
+    elif airtable_record_id:
         try:
             update_rights_clearance_case_in_airtable(
                 payload=payload,
@@ -2419,7 +2434,14 @@ def _handle_company_registry_edit_resubmit(
 
     airtable_record_id = str(existing_row.get("airtable_project_id") or "").strip()
     airtable_result: str = "skipped_no_record_id"
-    if airtable_record_id:
+    if not _company_cfg.get("airtable_sync_enabled", True):
+        airtable_result = "skipped_config"
+        logger.info(
+            "Airtable sync skipped by workspace config submission_id=%s workspace=%s workflow=company_registry",
+            submission_id,
+            payload.workspace_slug,
+        )
+    elif airtable_record_id:
         try:
             update_company_registry_in_airtable(
                 payload=payload,
@@ -2579,7 +2601,17 @@ def create_submission(
     airtable_result: Optional[Dict[str, Any]] = None
     airtable_error: Optional[str] = None
 
-    if _is_release_intake_payload(validated_payload):
+    _wf_type_for_sync = _submission_workflow_type(validated_payload)
+    _wf_cfg_for_sync = get_workflow_settings(validated_payload.workspace_slug, _wf_type_for_sync)
+
+    if not _wf_cfg_for_sync.get("airtable_sync_enabled", True):
+        logger.info(
+            "Airtable sync skipped by workspace config submission_id=%s workspace=%s workflow=%s",
+            submission_id,
+            validated_payload.workspace_slug,
+            _wf_type_for_sync,
+        )
+    elif _is_release_intake_payload(validated_payload):
         try:
             airtable_result = _sync_airtable(
                 payload=validated_payload,
