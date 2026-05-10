@@ -248,6 +248,82 @@ def _build_record_fields(
     return fields
 
 
+
+# ---------------------------------------------------------------------------
+# Update-only entry point (edit/resubmit) — case fields only, no itens/partes
+# ---------------------------------------------------------------------------
+
+def update_rights_clearance_case_in_airtable(
+    *,
+    payload: Any,
+    airtable_case_id: str,
+    submission_id: str,
+) -> Dict[str, Any]:
+    """
+    PATCHes the existing [V2] Clearance case record with fresh payload data.
+
+    Scope: case fields only.
+    Itens and Partes are deliberately NOT touched — re-creating them on edit
+    would cause duplicates, and we do not store their IDs for targeted updates.
+
+    Returns {"ok": True/False, "status": str, "record_id": str}.
+    """
+    if not settings.AIRTABLE_RIGHTS_CLEARANCE_MUSICAL_ENABLED:
+        logger.info(
+            "Rights clearance Airtable update skipped (AIRTABLE_RIGHTS_CLEARANCE_MUSICAL_ENABLED=False)"
+        )
+        return {"ok": True, "status": "disabled", "record_id": airtable_case_id}
+
+    clearance_format: str = _safe_str(
+        getattr(getattr(payload, "request_type", None), "clearance_format", "")
+    )
+    requester         = _safe_dict(getattr(payload, "requester_identification", None))
+    project_context   = _safe_dict(getattr(payload, "project_context", None))
+    clearance_scope   = _safe_dict(getattr(payload, "clearance_scope", None))
+    assets_references = _safe_dict(getattr(payload, "assets_references", None))
+    workspace_slug: str = _safe_str(getattr(payload, "workspace_slug", ""))
+
+    # Rebuild the edit URL using the existing token that is already stored in Airtable.
+    # We pass None here so it will try to build from the token embedded in the case;
+    # in practice the case already has the correct Edit URL — we just refresh other fields.
+    edit_url = None  # intentionally omitted: do not overwrite the stored edit URL
+
+    fields = _build_record_fields(
+        clearance_format=clearance_format,
+        requester=requester,
+        project_context=project_context,
+        clearance_scope=clearance_scope,
+        assets_references=assets_references,
+        submission_id=submission_id,
+        edit_url=edit_url,
+    )
+
+    # Remove system-assigned fields that must not be overwritten on an update
+    for immutable in ("Status", "Canal de Entrada", "Data de Solicitação", "Airtable Sync Status"):
+        fields.pop(immutable, None)
+
+    base_id = _base_id()
+    table_encoded = quote(CLEARANCE_V2_TABLE, safe="")
+    url = f"https://api.airtable.com/v0/{base_id}/{table_encoded}/{airtable_case_id}"
+
+    logger.info(
+        "Updating [V2] Clearance case: airtable_case_id=%s submission_id=%s format=%s",
+        airtable_case_id,
+        submission_id,
+        clearance_format,
+    )
+
+    result = _request_json("PATCH", url, payload={"fields": fields})
+    updated_id: str = result.get("id", airtable_case_id)
+
+    logger.info(
+        "Rights clearance [V2] Clearance case updated: airtable_id=%s submission_id=%s",
+        updated_id,
+        submission_id,
+    )
+
+    return {"ok": True, "status": "updated", "record_id": updated_id}
+
 # --- Airtable record creation -------------------------------------------------
 
 

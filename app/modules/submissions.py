@@ -31,7 +31,7 @@ from app.services.airtable import (
     update_airtable_project_focus_track,
 )
 from app.services.airtable_company_registry import sync_company_registry_to_airtable, update_company_registry_in_airtable
-from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable
+from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable, update_rights_clearance_case_in_airtable
 from app.services.email import send_edit_link_email, send_submission_summary_email
 from app.services.workspace_config import get_workflow_settings
 from app.services.google_drive import sync_clearance_to_google_drive, sync_submission_to_google_drive
@@ -2337,12 +2337,29 @@ def _handle_clearance_edit_resubmit(
             submission_id,
         )
 
+    airtable_record_id = str(existing_row.get("airtable_project_id") or "").strip()
+    airtable_result: str = "skipped_no_record_id"
+    if airtable_record_id:
+        try:
+            update_rights_clearance_case_in_airtable(
+                payload=payload,
+                airtable_case_id=airtable_record_id,
+                submission_id=submission_id,
+            )
+            airtable_result = "updated"
+        except Exception:
+            logger.warning(
+                "Clearance edit resubmit Airtable update failed submission_id=%s",
+                submission_id,
+            )
+            airtable_result = "error"
+
     return {
         "ok": True,
         "submission_id": submission_id,
         "edit_token": edit_token,
         "updated": True,
-        "airtable": "skipped_edit_resubmit",
+        "airtable": airtable_result,
         "drive_sync": {"status": "skipped", "reason": "edit_resubmit"},
     }
 
