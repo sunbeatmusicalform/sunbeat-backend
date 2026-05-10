@@ -9,6 +9,7 @@ from urllib.parse import quote
 import httpx
 
 from app.core.config import settings
+from app.services.workspace_config import get_airtable_extra_config
 from app.core.database import supabase
 from app.schemas.people_registry import PeopleRegistryPreparedPayload
 
@@ -428,8 +429,10 @@ def sync_people_registry_record_to_airtable(
         )
 
     try:
-        base_id = _airtable_base_id()
-        table_url = _table_url(base_id, config.table_name)
+        _at_extra = get_airtable_extra_config(prepared.workspace_slug, "people_registry")
+        base_id = _at_extra.get("base_id_override") or _airtable_base_id()
+        _table_name = _at_extra.get("people_registry_table_override") or config.table_name
+        table_url = _table_url(base_id, _table_name)
         existing_record, merge_key = _find_existing_airtable_record(
             table_url=table_url,
             prepared=prepared,
@@ -459,13 +462,13 @@ def sync_people_registry_record_to_airtable(
             status="synced",
             error=None,
             base_id=base_id,
-            table_name=config.table_name,
+            table_name=_table_name,
             airtable_record_id=airtable_record_id,
         )
         return PeopleRegistryAirtableSyncResult(
             status="synced",
             base_id=base_id,
-            table_name=config.table_name,
+            table_name=_table_name,
             airtable_record_id=airtable_record_id,
             error=None,
             action=action,
@@ -483,7 +486,7 @@ def sync_people_registry_record_to_airtable(
             status="failed",
             error=error,
             base_id=base_id,
-            table_name=config.table_name,
+            table_name=config.table_name,  # config.table_name usado no except (pre-override)
             airtable_record_id=None,
         )
         return PeopleRegistryAirtableSyncResult(

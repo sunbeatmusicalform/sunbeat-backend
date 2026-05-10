@@ -9,6 +9,7 @@ from urllib.parse import quote
 import httpx
 
 from app.core.config import settings
+from app.services.workspace_config import get_airtable_extra_config
 from app.core.database import supabase
 
 logger = logging.getLogger(__name__)
@@ -66,10 +67,10 @@ def _project_focus_track_field() -> str:
     return getattr(settings, "AIRTABLE_PROJECT_FOCUS_TRACK_FIELD", "Faixa Foco")
 
 
-def _table_url(table_name: str) -> str:
-    base_id = _base_id()
+def _table_url(table_name: str, base_id: Optional[str] = None) -> str:
+    bid = base_id or _base_id()
     encoded_table_name = quote(table_name, safe="")
-    return f"{AIRTABLE_API_URL}/{base_id}/{encoded_table_name}"
+    return f"{AIRTABLE_API_URL}/{bid}/{encoded_table_name}"
 
 
 def _request_json(
@@ -411,6 +412,9 @@ def _is_unknown_field_error(error_message: str) -> bool:
 def _try_set_track_status(
     track_record_id: str,
     status_value: str,
+    *,
+    base_id: Optional[str] = None,
+    tracks_table_name: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     """PATCH the track status field tolerantly.
 
@@ -421,7 +425,8 @@ def _try_set_track_status(
     """
 
     status_field = _track_status_field()
-    url = f"{_table_url(_tracks_table_name())}/{track_record_id}"
+    _tt = tracks_table_name or _tracks_table_name()
+    url = f"{_table_url(_tt, base_id)}/{track_record_id}"
     payload = {
         "fields": {status_field: status_value},
         "typecast": True,
@@ -448,6 +453,8 @@ def _ensure_track_project_link(
     track_record_id: str,
     project_record_id: str,
     project_link_field: str,
+    base_id: Optional[str] = None,
+    tracks_table_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     payload = {
         "fields": {
@@ -455,8 +462,8 @@ def _ensure_track_project_link(
         },
         "typecast": True,
     }
-
-    url = f"{_table_url(_tracks_table_name())}/{track_record_id}"
+    _tt = tracks_table_name or _tracks_table_name()
+    url = f"{_table_url(_tt, base_id)}/{track_record_id}"
     return _request_json("PATCH", url, payload)
 
 
@@ -470,9 +477,10 @@ def create_airtable_project(
     draft_token: Optional[str] = None,
     edit_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-    del workspace_slug, submission_id, draft_token, edit_url
-
-    table_name = _projects_table_name()
+    del submission_id, draft_token, edit_url
+    _at_extra = get_airtable_extra_config(workspace_slug, "release_intake")
+    _base = _at_extra.get("base_id_override") or None
+    table_name = _at_extra.get("projects_table_override") or _projects_table_name()
     fields = _build_project_fields(
         identification=identification,
         project=project,
@@ -480,7 +488,7 @@ def create_airtable_project(
     )
 
     payload = {"records": [{"fields": fields}], "typecast": True}
-    data = _request_json("POST", _table_url(table_name), payload)
+    data = _request_json("POST", _table_url(table_name, _base), payload)
 
     records = data.get("records", [])
     if not records:
@@ -496,9 +504,10 @@ def create_airtable_tracks(
     submission_id: str,
     tracks: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    del workspace_slug, submission_id
-
-    table_name = _tracks_table_name()
+    del submission_id
+    _at_extra = get_airtable_extra_config(workspace_slug, "release_intake")
+    _base = _at_extra.get("base_id_override") or None
+    table_name = _at_extra.get("tracks_table_override") or _tracks_table_name()
     project_link_field = _track_project_link_field()
 
     record_payloads: List[Dict[str, Any]] = []
@@ -514,7 +523,7 @@ def create_airtable_tracks(
 
     for batch in _chunk(record_payloads, size=10):
         payload = {"records": batch, "typecast": True}
-        data = _request_json("POST", _table_url(table_name), payload)
+        data = _request_json("POST", _table_url(table_name, _base), payload)
         created.extend(data.get("records", []))
 
     linked_tracks: List[Dict[str, Any]] = []
@@ -528,6 +537,8 @@ def create_airtable_tracks(
             track_record_id=item["id"],
             project_record_id=airtable_project_id,
             project_link_field=project_link_field,
+            base_id=_base,
+            tracks_table_name=table_name,
         )
         linked_tracks.append(patched)
 
@@ -542,6 +553,10 @@ def upsert_airtable_project(submission: Dict[str, Any]) -> Dict[str, Any]:
     edit_url = submission.get("edit_url")
     airtable_project_id = str(submission.get("airtable_project_id") or "").strip()
 
+    _at_extra = get_airtable_extra_config(workspace_slug, "release_intake")
+    _base = _at_extra.get("base_id_override") or None
+    _ptable = _at_extra.get("projects_table_override") or _projects_table_name()
+
     if airtable_project_id:
         fields = _build_project_fields(
             identification=identification,
@@ -550,7 +565,7 @@ def upsert_airtable_project(submission: Dict[str, Any]) -> Dict[str, Any]:
         )
         return _request_json(
             "PATCH",
-            f"{_table_url(_projects_table_name())}/{airtable_project_id}",
+            f"{_table_url(_ptable, _base)}/{airtable_project_id}",
             {"fields": fields, "typecast": True},
         )
 
@@ -585,6 +600,9 @@ def upsert_airtable_tracks(
         or "atabaque"
     )
     submission_id = str(submission.get("id") or "")
+    _at_extra = get_airtable_extra_config(workspace_slug, "release_intake")
+    _base = _at_extra.get("base_id_override") or None
+    _ttable = _at_extra.get("tracks_table_override") or _tracks_table_name()
     synced_tracks: List[Dict[str, Any]] = []
     new_tracks = [
         track
@@ -625,7 +643,7 @@ def upsert_airtable_tracks(
 
         if track.get("deleted_at"):
             record = _try_set_track_status(
-                airtable_track_id, TRACK_STATUS_REMOVED
+                airtable_track_id, TRACK_STATUS_REMOVED, base_id=_base, tracks_table_name=_ttable
             )
             fields = (record or {}).get("fields", {}) or {}
             synced_tracks.append(
@@ -645,13 +663,13 @@ def upsert_airtable_tracks(
         )
         record = _request_json(
             "PATCH",
-            f"{_table_url(_tracks_table_name())}/{airtable_track_id}",
+            f"{_table_url(_ttable, _base)}/{airtable_track_id}",
             {"fields": fields, "typecast": True},
         )
         # Always enforce "Ativa" on active tracks (covers reactivation
         # idempotently). Tolerant: if the field does not exist in the base,
         # this logs a warning and continues without breaking the sync.
-        _try_set_track_status(airtable_track_id, TRACK_STATUS_ACTIVE)
+        _try_set_track_status(airtable_track_id, TRACK_STATUS_ACTIVE, base_id=_base, tracks_table_name=_ttable)
         synced_tracks.append(
             {
                 **record,

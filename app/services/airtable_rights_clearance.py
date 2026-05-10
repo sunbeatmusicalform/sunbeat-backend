@@ -31,6 +31,7 @@ from urllib.parse import quote
 
 from app.core.config import settings
 from app.services.airtable import _base_id, _request_json
+from app.services.workspace_config import get_airtable_extra_config
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,9 @@ def update_rights_clearance_case_in_airtable(
     clearance_scope   = _safe_dict(getattr(payload, "clearance_scope", None))
     assets_references = _safe_dict(getattr(payload, "assets_references", None))
     workspace_slug: str = _safe_str(getattr(payload, "workspace_slug", ""))
+    _at_extra = get_airtable_extra_config(workspace_slug, "rights_clearance") if workspace_slug else {}
+    _base = _at_extra.get("base_id_override") or None
+    _case_table = _at_extra.get("clearance_case_table_override") or CLEARANCE_V2_TABLE
 
     # Rebuild the edit URL using the existing token that is already stored in Airtable.
     # We pass None here so it will try to build from the token embedded in the case;
@@ -302,9 +306,9 @@ def update_rights_clearance_case_in_airtable(
     for immutable in ("Status", "Canal de Entrada", "Data de Solicitação", "Airtable Sync Status"):
         fields.pop(immutable, None)
 
-    base_id = _base_id()
-    table_encoded = quote(CLEARANCE_V2_TABLE, safe="")
-    url = f"https://api.airtable.com/v0/{base_id}/{table_encoded}/{airtable_case_id}"
+    bid = _base or _base_id()
+    table_encoded = quote(_case_table, safe="")
+    url = f"https://api.airtable.com/v0/{bid}/{table_encoded}/{airtable_case_id}"
 
     logger.info(
         "Updating [V2] Clearance case: airtable_case_id=%s submission_id=%s format=%s",
@@ -327,11 +331,12 @@ def update_rights_clearance_case_in_airtable(
 # --- Airtable record creation -------------------------------------------------
 
 
-def _create_clearance_record(fields: Dict[str, Any]) -> Dict[str, Any]:
+def _create_clearance_record(fields: Dict[str, Any], *, base_id: Optional[str] = None, table: Optional[str] = None) -> Dict[str, Any]:
     """POSTs a new record to [V2] Clearance and returns the Airtable response."""
-    base_id = _base_id()
-    table_encoded = quote(CLEARANCE_V2_TABLE, safe="")
-    url = f"https://api.airtable.com/v0/{base_id}/{table_encoded}"
+    bid = base_id or _base_id()
+    tbl = table or CLEARANCE_V2_TABLE
+    table_encoded = quote(tbl, safe="")
+    url = f"https://api.airtable.com/v0/{bid}/{table_encoded}"
     return _request_json("POST", url, payload={"fields": fields})
 
 
@@ -389,6 +394,9 @@ def _build_item_fields(track: Dict[str, Any], case_id: str) -> Dict[str, Any]:
 def _create_clearance_itens(
     case_id: str,
     tracks: List[Dict[str, Any]],
+    *,
+    base_id: Optional[str] = None,
+    table: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Batch-creates [V2] Clearance Itens records linked to the given case.
@@ -398,9 +406,10 @@ def _create_clearance_itens(
     if not tracks:
         return []
 
-    base_id = _base_id()
-    table_encoded = quote(CLEARANCE_ITENS_TABLE, safe="")
-    url = f"https://api.airtable.com/v0/{base_id}/{table_encoded}"
+    bid = base_id or _base_id()
+    tbl = table or CLEARANCE_ITENS_TABLE
+    table_encoded = quote(tbl, safe="")
+    url = f"https://api.airtable.com/v0/{bid}/{table_encoded}"
 
     created: List[Dict[str, Any]] = []
     for i in range(0, len(tracks), ITENS_BATCH_SIZE):
@@ -558,14 +567,18 @@ def _collect_item_partes(
 
 def _create_clearance_partes(
     partes: List[Dict[str, Any]],
+    *,
+    base_id: Optional[str] = None,
+    table: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Batch-creates [V2] Clearance Partes records."""
     if not partes:
         return []
 
-    base_id = _base_id()
-    table_encoded = quote(CLEARANCE_PARTES_TABLE, safe="")
-    url = f"https://api.airtable.com/v0/{base_id}/{table_encoded}"
+    bid = base_id or _base_id()
+    tbl = table or CLEARANCE_PARTES_TABLE
+    table_encoded = quote(tbl, safe="")
+    url = f"https://api.airtable.com/v0/{bid}/{table_encoded}"
 
     created: List[Dict[str, Any]] = []
     for i in range(0, len(partes), PARTES_BATCH_SIZE):
@@ -645,6 +658,11 @@ def sync_rights_clearance_to_airtable(
     tracks_dicts: List[Dict[str, Any]] = [_safe_dict(t) for t in tracks_raw]
 
     workspace_slug: str = _safe_str(getattr(payload, "workspace_slug", ""))
+    _at_extra = get_airtable_extra_config(workspace_slug, "rights_clearance") if workspace_slug else {}
+    _base = _at_extra.get("base_id_override") or None
+    _case_table = _at_extra.get("clearance_case_table_override") or None
+    _itens_table = _at_extra.get("clearance_itens_table_override") or None
+    _partes_table = _at_extra.get("clearance_partes_table_override") or None
     edit_url = _build_edit_url(edit_token, workspace_slug)
 
     fields = _build_record_fields(
@@ -664,7 +682,7 @@ def sync_rights_clearance_to_airtable(
         fields.get("Nome do Case"),
     )
 
-    airtable_record = _create_clearance_record(fields)
+    airtable_record = _create_clearance_record(fields, base_id=_base, table=_case_table)
     case_id: str = airtable_record["id"]
 
     logger.info(
@@ -684,7 +702,7 @@ def sync_rights_clearance_to_airtable(
             submission_id,
         )
         try:
-            airtable_itens = _create_clearance_itens(case_id, tracks_dicts)
+            airtable_itens = _create_clearance_itens(case_id, tracks_dicts, base_id=_base, table=_itens_table)
             logger.info(
                 "[V2] Clearance Itens created: count=%d case=%s submission_id=%s",
                 len(airtable_itens),
@@ -725,7 +743,7 @@ def sync_rights_clearance_to_airtable(
                 case_id,
                 submission_id,
             )
-            airtable_partes = _create_clearance_partes(all_partes)
+            airtable_partes = _create_clearance_partes(all_partes, base_id=_base, table=_partes_table)
             logger.info(
                 "[V2] Clearance Partes created: count=%d case=%s submission_id=%s",
                 len(airtable_partes),

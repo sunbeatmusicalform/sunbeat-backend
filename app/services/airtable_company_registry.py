@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 from pyairtable import Api
 
 from app.core.config import settings
+from app.services.workspace_config import get_airtable_extra_config
 from app.schemas.submission import CompanyRegistrySubmissionPayload
 
 logger = logging.getLogger(__name__)
@@ -142,8 +143,9 @@ def sync_company_registry_to_airtable(
     Sincroniza campos publicos + campos submit-only (draft_token, submitted_at).
     Retorna dict com ok, status, record_id.
     """
-    base_id = getattr(settings, "AIRTABLE_BASE_ID", None)
-    table_id = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
+    _at_extra = get_airtable_extra_config(str(payload.workspace_slug or ""), "company_registry")
+    base_id = _at_extra.get("base_id_override") or getattr(settings, "AIRTABLE_BASE_ID", None)
+    table_id = _at_extra.get("company_registry_table_override") or getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
     enabled = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_ENABLED", False)
 
     if not enabled:
@@ -195,8 +197,9 @@ def update_company_registry_in_airtable(
     Usado no fluxo de edit/resubmit. Sincroniza apenas campos publicos.
     Nao cria registro novo — exige airtable_record_id valido.
     """
-    base_id = getattr(settings, "AIRTABLE_BASE_ID", None)
-    table_id = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
+    _at_extra = get_airtable_extra_config(str(payload.workspace_slug or ""), "company_registry")
+    base_id = _at_extra.get("base_id_override") or getattr(settings, "AIRTABLE_BASE_ID", None)
+    table_id = _at_extra.get("company_registry_table_override") or getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
     enabled = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_ENABLED", False)
 
     if not enabled:
