@@ -159,3 +159,47 @@ def get_workflow_setting(
     """
     settings = get_workflow_settings(workspace_slug, workflow_type)
     return settings.get(key, default)
+
+def get_airtable_extra_config(
+    workspace_slug: str,
+    workflow_type: str,
+) -> Dict[str, Any]:
+    """
+    Retorna o bloco extra_settings.airtable para um par workspace + workflow.
+    Fallback seguro para {} se o campo estiver ausente, nulo ou mal-formado.
+    """
+    try:
+        settings = get_workflow_settings(workspace_slug, workflow_type)
+        return (settings.get("extra_settings") or {}).get("airtable") or {}
+    except Exception:
+        return {}
+
+
+def get_drive_extra_config(
+    workspace_slug: str,
+    workflow_type: str,
+) -> Dict[str, Any]:
+    """
+    Retorna o bloco extra_settings.drive para um par workspace + workflow.
+    Fallback seguro para {} se o campo estiver ausente, nulo ou mal-formado.
+    """
+    try:
+        settings = get_workflow_settings(workspace_slug, workflow_type)
+        return (settings.get("extra_settings") or {}).get("drive") or {}
+    except Exception:
+        return {}
+
+
+def get_email_extra_config(
+    workspace_slug: str,
+    workflow_type: str,
+) -> Dict[str, Any]:
+    """
+    Retorna o bloco extra_settings.email para um par workspace + workflow.
+    Fallback seguro para {} se o campo estiver ausente, nulo ou mal-formado.
+    """
+    try:
+        settings = get_workflow_settings(workspace_slug, workflow_type)
+        return (settings.get("extra_settings") or {}).get("email") or {}
+    except Exception:
+        return {}
