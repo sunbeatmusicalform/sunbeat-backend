@@ -54,7 +54,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     logging.getLogger("sunbeat.errors").error("Unhandled exception: %s\n%s", exc, tb)
     return JSONResponse(
         status_code=500,
-        content={"detail": str(exc), "traceback": tb},
+        content={"detail": "Internal server error."},
     )
 
 

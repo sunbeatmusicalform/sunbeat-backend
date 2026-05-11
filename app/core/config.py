@@ -61,4 +61,9 @@ class Settings(BaseSettings):
     GOOGLE_DRIVE_CLEARANCE_MUSICAL_ROOT_FOLDER_ID: str | None = Field(default=None)
     GOOGLE_DRIVE_CLEARANCE_NON_MUSICAL_ROOT_FOLDER_ID: str | None = Field(default=None)
 
-    # API interna — a
+
+    # API interna — admin manual e futura Setup AI
+    INTERNAL_ADMIN_TOKEN: str | None = Field(default=None)
+
+
+settings = Settings()
