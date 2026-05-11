@@ -7,7 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import requests
 
 from app.core.config import settings
-from app.services.workspace_config import get_email_extra_config
+from app.services.workspace_config import get_email_extra_config, get_email_event_config
 
 logger = logging.getLogger("sunbeat.email")
 
@@ -180,6 +180,8 @@ def send_edit_link_email(
     recipient_name: Optional[str] = None,
     workspace_slug: str = "atabaque",
     workflow_type: Optional[str] = None,
+    event: str = "on_submit",
+    variant: Optional[str] = None,
 ) -> Dict[str, Any]:
     # [MT-OBS] PR-01 — log de workspace para observabilidade multi-tenant
     logger.info(
@@ -190,10 +192,16 @@ def send_edit_link_email(
         workflow_type,
     )
 
-    # Resolver cc/bcc via extra_settings.email (Etapa C)
-    _email_extra = get_email_extra_config(workspace_slug, workflow_type or "release_intake")
-    _cc = _email_extra.get("cc_addresses") or None
+    # Resolver destinatarios internos via extra_settings.email.events (v2) com fallback v1
+    _wf = workflow_type or "release_intake"
+    _email_extra = get_email_extra_config(workspace_slug, _wf)
+    _ev_cfg = get_email_event_config(workspace_slug, _wf, event, variant=variant)
+    # v2: per-event recipients; fallback v1: cc_addresses global
+    _cc = (_ev_cfg.get("recipients") or None) or (_email_extra.get("cc_addresses") or None)
     _bcc = _email_extra.get("bcc_addresses") or None
+    # on_edit desabilitado por config: nao envia CC (mas envia email ao submitter)
+    if not _ev_cfg.get("enabled", True) and _ev_cfg.get("recipients") == []:
+        _cc = None
 
     edit_url = build_edit_url(
         edit_token=edit_token,
@@ -323,6 +331,7 @@ def send_draft_link_email(
     project_title: Optional[str] = None,
     recipient_name: Optional[str] = None,
     workspace_slug: str = "atabaque",
+    workflow_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     # [MT-OBS] PR-01 — log de workspace para observabilidade multi-tenant
     logger.info(
@@ -364,10 +373,15 @@ def send_draft_link_email(
         """
     )
 
+    _draft_ev = get_email_event_config(
+        workspace_slug, workflow_type or "release_intake", "on_draft"
+    )
+    _draft_cc = _draft_ev.get("recipients") or None
     return _post_resend(
         to_email=to_email,
         subject=subject,
         html=html,
+        cc=_draft_cc,
     )
 
 

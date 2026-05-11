@@ -203,3 +203,50 @@ def get_email_extra_config(
         return (settings.get("extra_settings") or {}).get("email") or {}
     except Exception:
         return {}
+
+
+def get_email_event_config(
+    workspace_slug: str,
+    workflow_type: str,
+    event: str,
+    *,
+    variant: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Retorna {"recipients": [...], "enabled": bool} para um evento de email.
+
+    Resolucao em cascata:
+      1. extra_settings.email.variants[variant][event]  (se variant fornecida)
+      2. extra_settings.email.events[event]
+      3. {"recipients": [], "enabled": False}           (nao configurado)
+
+    Limita recipients a 5 enderecos. Nunca lanca excecao.
+    """
+    try:
+        email_extra = get_email_extra_config(workspace_slug, workflow_type)
+        events: Dict[str, Any] = email_extra.get("events") or {}
+        variants: Dict[str, Any] = email_extra.get("variants") or {}
+
+        # 1. Variant override
+        if variant and variant in variants:
+            variant_events = variants[variant] or {}
+            if event in variant_events:
+                cfg = variant_events[event] or {}
+                return {
+                    "recipients": list((cfg.get("recipients") or []))[:5],
+                    "enabled": bool(cfg.get("enabled", True)),
+                }
+
+        # 2. Base events block
+        if event in events:
+            cfg = events[event] or {}
+            return {
+                "recipients": list((cfg.get("recipients") or []))[:5],
+                "enabled": bool(cfg.get("enabled", True)),
+            }
+
+        # 3. Nao configurado
+        return {"recipients": [], "enabled": False}
+    except Exception:
+        return {"recipients": [], "enabled": False}
+

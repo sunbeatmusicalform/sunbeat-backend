@@ -33,7 +33,7 @@ from app.services.airtable import (
 from app.services.airtable_company_registry import sync_company_registry_to_airtable, update_company_registry_in_airtable
 from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable, update_rights_clearance_case_in_airtable
 from app.services.email import send_edit_link_email, send_submission_summary_email
-from app.services.workspace_config import get_workflow_settings
+from app.services.workspace_config import get_workflow_settings, get_email_event_config
 from app.services.google_drive import sync_clearance_to_google_drive, sync_submission_to_google_drive
 
 logger = logging.getLogger("sunbeat.submissions")
@@ -1828,7 +1828,14 @@ def _maybe_send_submission_summary_email(
     workspace_email_settings = _load_workspace_email_settings(
         validated_payload.workspace_slug
     )
-    notification_emails = workspace_email_settings["notification_emails"]
+    _summary_wf = _submission_workflow_type(validated_payload)
+    _summary_ev = get_email_event_config(
+        validated_payload.workspace_slug, _summary_wf, "on_summary"
+    )
+    # v2: per-event recipients; fallback v1: notification_emails legacy
+    notification_emails = (
+        _summary_ev.get("recipients") or workspace_email_settings["notification_emails"]
+    )
     recipients_count = len(notification_emails)
 
     if not _is_release_intake_payload(validated_payload):
@@ -2270,6 +2277,25 @@ def _update_release_submission(
         submission_id=submission_id,
     )
     response["drive_sync"] = drive_sync
+
+    # Email on_edit para release_intake (era ausente — fechando gap)
+    if _ri_cfg.get("edit_email_enabled", True):
+        try:
+            send_edit_link_email(
+                to_email=payload.identification.submitter_email,
+                recipient_name=payload.identification.submitter_name,
+                edit_token=str(existing_row.get("edit_token") or payload.edit_token or ""),
+                project_title=payload.identification.project_title,
+                workspace_slug=payload.workspace_slug,
+                workflow_type="release_intake",
+                event="on_edit",
+            )
+        except Exception:
+            logger.warning(
+                "Release intake edit email failed submission_id=%s",
+                submission_id,
+            )
+
     return response
 
 
@@ -2344,6 +2370,8 @@ def _handle_clearance_edit_resubmit(
                 project_title=payload.project_context.project_title,
                 workspace_slug=payload.workspace_slug,
                 workflow_type="rights_clearance",
+                event="on_edit",
+                variant=str(getattr(getattr(payload, "request_type", None), "clearance_format", "") or ""),
             )
         except Exception:
             logger.warning(
@@ -2431,6 +2459,7 @@ def _handle_company_registry_edit_resubmit(
                 project_title=payload.company_data.fantasy_name,
                 workspace_slug=payload.workspace_slug,
                 workflow_type="company_registry",
+                event="on_edit",
             )
         except Exception:
             logger.warning(
@@ -2757,6 +2786,15 @@ def create_submission(
             }
             if supports_workflow_routed_edit_email:
                 email_kwargs["workflow_type"] = _submission_workflow_type(validated_payload)
+            email_kwargs["event"] = "on_submit"
+            # Variant para rights_clearance: roteia por clearance_format
+            if _wf_type == "rights_clearance":
+                email_kwargs["variant"] = str(
+                    getattr(
+                        getattr(validated_payload, "request_type", None),
+                        "clearance_format", "",
+                    ) or ""
+                )
 
             email_result = send_edit_link_email(**email_kwargs)
 

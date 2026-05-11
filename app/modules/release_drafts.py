@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.core.database import supabase
 from app.modules.submissions import _load_workspace_email_settings
+from app.services.workspace_config import get_email_event_config
 from app.modules.workflow_registry import (
     build_workflow_source,
     normalize_workflow_type,
@@ -115,35 +116,10 @@ def _is_first_stage_complete(
     )
 
 
-def _persist_first_stage_completion_email_meta(
-    *,
-    draft_token: str,
-    expected_updated_at: Any,
-    meta: Dict[str, Any],
-    sent_at: str,
-) -> bool:
-    query = (
-        supabase.table("release_intake_drafts")
-        .update(
-            {
-                "meta": meta,
-                "updated_at": sent_at,
-            }
-        )
-        .eq("draft_token", draft_token)
-    )
-    if expected_updated_at is not None:
-        query = query.eq("updated_at", expected_updated_at)
-
-    result = query.execute()
-    return bool(result.data)
-
-
 def _maybe_send_first_stage_completion_email(
     draft: Dict[str, Any],
 ) -> Dict[str, Any]:
     workspace_slug = draft.get("client_slug") or DEFAULT_WORKSPACE_SLUG
-    draft_token = str(draft.get("draft_token") or "").strip()
     meta = _ensure_identity_meta(
         draft.get("meta") or {},
         workspace_slug=workspace_slug,
@@ -157,15 +133,22 @@ def _maybe_send_first_stage_completion_email(
         return meta
 
     workspace_email_settings = _load_workspace_email_settings(workspace_slug)
-    notification_emails = workspace_email_settings["notification_emails"]
+    _workflow_type = (draft.get("meta") or {}).get("workflow_type") or "release_intake"
+    _ev_cfg = get_email_event_config(workspace_slug, _workflow_type, "on_first_stage")
+    # v2: per-event recipients; fallback v1: notification_emails legacy
+    notification_emails = (
+        _ev_cfg.get("recipients") or workspace_email_settings["notification_emails"]
+    )
+    _ev_enabled = _ev_cfg.get("enabled", True)  # False = evento desabilitado por config
     if (
-        not workspace_email_settings["submission_email_enabled"]
+        not _ev_enabled
+        or not workspace_email_settings["submission_email_enabled"]
         or not notification_emails
     ):
         logger.info(
             "first_stage_completion_email skipped workspace_slug=%s draft_token=%s reason=no_recipients_or_disabled",
             workspace_slug,
-            draft_token,
+            draft.get("draft_token"),
         )
         return meta
 
@@ -178,51 +161,25 @@ def _maybe_send_first_stage_completion_email(
             submitter_name=contact["submitter_name"],
             submitter_email=contact["submitter_email"],
             project_title=contact["project_title"],
-            draft_token=draft_token,
+            draft_token=draft["draft_token"],
             current_step=draft.get("current_step"),
             workspace_slug=workspace_slug,
-            idempotency_key=f"{draft_token}:first_stage",
         )
+        provider_message_id = email_result.get("provider_message_id")
+        if not provider_message_id:
+            raise RuntimeError(
+                "Email provider accepted the request but did not return a message id"
+            )
     except Exception:
-        logger.warning(
-            "first_stage_completion_email provider_failed workspace_slug=%s draft_token=%s",
+        logger.exception(
+            "first_stage_completion_email failed workspace_slug=%s draft_token=%s",
             workspace_slug,
-            draft_token,
-            exc_info=True,
+            draft.get("draft_token"),
         )
         return meta
-
-    email_status = str(email_result.get("status") or "").strip().lower()
-    if email_status not in {"sent", "sent_without_message_id"}:
-        logger.warning(
-            "first_stage_completion_email failed workspace_slug=%s draft_token=%s status=%s",
-            workspace_slug,
-            draft_token,
-            email_status or "unknown",
-        )
-        return meta
-
-    provider_message_id = email_result.get("provider_message_id")
-    latest_draft = _load_draft_row(draft_token)
-    latest_meta_source = latest_draft.get("meta") if latest_draft else meta
-    latest_meta = _ensure_identity_meta(
-        latest_meta_source or {},
-        workspace_slug=workspace_slug,
-        workflow_type=(latest_draft or {}).get("meta", {}).get("workflow_type")
-        if latest_draft and isinstance(latest_draft.get("meta"), dict)
-        else meta.get("workflow_type"),
-    )
-
-    if latest_meta.get("first_stage_completion_email_sent"):
-        logger.info(
-            "first_stage_completion_email already_sent_by_other workspace_slug=%s draft_token=%s reason=fresh_read",
-            workspace_slug,
-            draft_token,
-        )
-        return latest_meta
 
     sent_at = utc_now_iso()
-    updated_meta = dict(latest_meta)
+    updated_meta = dict(meta)
     updated_meta.update(
         {
             "first_stage_completion_email_sent": True,
@@ -233,40 +190,29 @@ def _maybe_send_first_stage_completion_email(
     )
 
     try:
-        persisted = _persist_first_stage_completion_email_meta(
-            draft_token=draft_token,
-            expected_updated_at=(latest_draft or {}).get("updated_at"),
-            meta=updated_meta,
-            sent_at=sent_at,
+        (
+            supabase.table("release_intake_drafts")
+            .update(
+                {
+                    "meta": updated_meta,
+                    "updated_at": sent_at,
+                }
+            )
+            .eq("draft_token", draft["draft_token"])
+            .execute()
         )
     except Exception:
-        logger.warning(
-            "first_stage_completion_email sent_but_flag_failed workspace_slug=%s draft_token=%s",
+        logger.exception(
+            "first_stage_completion_email state update failed workspace_slug=%s draft_token=%s",
             workspace_slug,
-            draft_token,
-            exc_info=True,
+            draft.get("draft_token"),
         )
-        return latest_meta
-
-    if not persisted:
-        logger.info(
-            "first_stage_completion_email already_sent_by_other workspace_slug=%s draft_token=%s reason=guard_conflict",
-            workspace_slug,
-            draft_token,
-        )
-        freshest_draft = _load_draft_row(draft_token)
-        if freshest_draft and isinstance(freshest_draft.get("meta"), dict):
-            return _ensure_identity_meta(
-                freshest_draft.get("meta") or {},
-                workspace_slug=workspace_slug,
-                workflow_type=(freshest_draft.get("meta") or {}).get("workflow_type"),
-            )
-        return latest_meta
+        return meta
 
     logger.info(
         "first_stage_completion_email sent workspace_slug=%s draft_token=%s recipients=%d step=%s message_id=%s",
         workspace_slug,
-        draft_token,
+        draft.get("draft_token"),
         len(notification_emails),
         draft.get("current_step"),
         provider_message_id,
@@ -283,6 +229,20 @@ async def save_draft(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     existing = _load_draft_row(draft_token) or {}
     workspace_slug = payload.get("workspace_slug") or existing.get("client_slug") or DEFAULT_WORKSPACE_SLUG
+
+    # [MT-OBS] PR-01 — log de workspace para observabilidade multi-tenant
+    workspace_source = (
+        "payload" if payload.get("workspace_slug")
+        else "existing_draft" if existing.get("client_slug")
+        else "default_fallback"
+    )
+    logger.info(
+        "save_draft workspace_slug=%s source=%s draft_token=%s is_new=%s",
+        workspace_slug,
+        workspace_source,
+        draft_token,
+        not bool(existing),
+    )
     meta = _ensure_identity_meta(
         _draft_meta(existing, payload.get("meta") or {}),
         workspace_slug=workspace_slug,
@@ -349,6 +309,13 @@ async def get_draft(draft_token: str) -> Dict[str, Any]:
     if not draft:
         raise HTTPException(status_code=404, detail="Draft not found")
 
+    # [MT-OBS] PR-01 — log de workspace para observabilidade multi-tenant
+    logger.info(
+        "get_draft workspace_slug=%s draft_token=%s",
+        draft.get("client_slug") or DEFAULT_WORKSPACE_SLUG,
+        draft_token,
+    )
+
     meta = _ensure_identity_meta(
         draft.get("meta") or {},
         workspace_slug=draft.get("client_slug") or DEFAULT_WORKSPACE_SLUG,
@@ -396,6 +363,20 @@ async def send_draft_link(payload: Dict[str, Any]) -> Dict[str, Any]:
 
     meta = draft.get("meta") or {}
     workspace_slug = payload.get("workspace_slug") or draft.get("client_slug") or DEFAULT_WORKSPACE_SLUG
+
+    # [MT-OBS] PR-01 — log de workspace para observabilidade multi-tenant
+    workspace_source = (
+        "payload" if payload.get("workspace_slug")
+        else "draft_client_slug" if draft.get("client_slug")
+        else "default_fallback"
+    )
+    logger.info(
+        "send_draft_link workspace_slug=%s source=%s draft_token=%s to_email=%s",
+        workspace_slug,
+        workspace_source,
+        draft_token,
+        to_email,
+    )
     workflow_type = normalize_workflow_type(
         payload.get("workflow_type") or meta.get("workflow_type")
     )
@@ -429,8 +410,8 @@ async def send_draft_link(payload: Dict[str, Any]) -> Dict[str, Any]:
             "recipient_name": recipient_name,
             "workspace_slug": workspace_slug,
         }
-        if supports_workflow_routing:
-            email_kwargs["workflow_type"] = workflow_type
+        # workflow_type sempre disponivel agora (send_draft_link_email aceita o param)
+        email_kwargs["workflow_type"] = workflow_type
 
         result = send_draft_link_email(
             **email_kwargs,
