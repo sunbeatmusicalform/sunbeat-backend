@@ -61,5 +61,4 @@ class Settings(BaseSettings):
     GOOGLE_DRIVE_CLEARANCE_MUSICAL_ROOT_FOLDER_ID: str | None = Field(default=None)
     GOOGLE_DRIVE_CLEARANCE_NON_MUSICAL_ROOT_FOLDER_ID: str | None = Field(default=None)
 
-
-settings = Settings()
+    # API interna — a

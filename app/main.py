@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.modules.admin_config import router as admin_config_router
 from app.modules.ai_gateway import router as ai_gateway_router
 from app.modules.people_registry import router as people_registry_router
 from app.modules.release_drafts import router as drafts_router
@@ -39,6 +40,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(admin_config_router)
 app.include_router(drafts_router)
 app.include_router(people_registry_router)
 app.include_router(submissions_router)
@@ -52,7 +54,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     logging.getLogger("sunbeat.errors").error("Unhandled exception: %s\n%s", exc, tb)
     return JSONResponse(
         status_code=500,
-        content={"detail": "Internal server error."},
+        content={"detail": str(exc), "traceback": tb},
     )
 
 
