@@ -14,12 +14,120 @@ Uso:
 """
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any, Dict, Optional
 
 from app.core.database import supabase
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Base operacional por workflow.
+#
+# Mantem o mapa dentro da estrutura ja existente de extra_settings para que a
+# configuracao manual e a futura Setup AI escrevam no mesmo lugar.
+# Chaves com prefixo "_" sao metadados de leitura; os servicos de sync seguem
+# consumindo apenas os overrides ja existentes.
+# ---------------------------------------------------------------------------
+_OPERATIONAL_EXTRA_SETTINGS: Dict[str, Dict[str, Any]] = {
+    "release_intake": {
+        "operational_base": {
+            "primary_store": "supabase",
+            "tables": ["submissions", "tracks", "submissions_revisions"],
+            "service": "app.modules.submissions",
+        },
+        "airtable": {
+            "_target_label": "[V2] Projetos Musicais + [V2] Faixas Musicais",
+            "_service": "app.services.airtable",
+            "_settings_keys": [
+                "AIRTABLE_BASE_ID",
+                "AIRTABLE_PROJECTS_TABLE",
+                "AIRTABLE_TRACKS_TABLE",
+            ],
+            "base_id_override": None,
+            "projects_table_override": None,
+            "tracks_table_override": None,
+        },
+        "drive": {
+            "_target_label": "Workspace/root folder + routing por cliente",
+            "_service": "app.services.google_drive.sync_submission_to_google_drive",
+            "_settings_keys": ["GOOGLE_DRIVE_ROOT_FOLDER_ID"],
+        },
+    },
+    "rights_clearance": {
+        "operational_base": {
+            "primary_store": "supabase",
+            "tables": ["submissions", "tracks", "submissions_revisions"],
+            "service": "app.modules.submissions",
+        },
+        "airtable": {
+            "_target_label": "[V2] Clearance + [V2] Clearance Itens + [V2] Clearance Partes",
+            "_service": "app.services.airtable_rights_clearance",
+            "_settings_keys": ["AIRTABLE_BASE_ID"],
+            "base_id_override": None,
+            "clearance_case_table_override": None,
+            "clearance_itens_table_override": None,
+            "clearance_partes_table_override": None,
+        },
+        "drive": {
+            "_target_label": "Clearance musical/nao-musical root folders",
+            "_service": "app.services.google_drive.sync_clearance_to_google_drive",
+            "_settings_keys": [
+                "GOOGLE_DRIVE_CLEARANCE_MUSICAL_ROOT_FOLDER_ID",
+                "GOOGLE_DRIVE_CLEARANCE_NON_MUSICAL_ROOT_FOLDER_ID",
+                "GOOGLE_DRIVE_ROOT_FOLDER_ID",
+            ],
+            "clearance_musical_root_override": None,
+            "clearance_nonmusical_root_override": None,
+        },
+    },
+    "company_registry": {
+        "operational_base": {
+            "primary_store": "supabase",
+            "tables": ["submissions", "submissions_revisions"],
+            "service": "app.modules.submissions",
+        },
+        "airtable": {
+            "_target_label": "Company Registry / clientes efetivos",
+            "_service": "app.services.airtable_company_registry",
+            "_settings_keys": [
+                "AIRTABLE_BASE_ID",
+                "AIRTABLE_COMPANY_REGISTRY_TABLE_ID",
+            ],
+            "base_id_override": None,
+            "company_registry_table_override": None,
+        },
+        "drive": {
+            "_target_label": "Nao mapeado para sync operacional nesta etapa",
+            "_service": None,
+            "_settings_keys": [],
+        },
+    },
+    "people_registry": {
+        "operational_base": {
+            "primary_store": "supabase",
+            "tables": ["people_registry_records"],
+            "service": "app.services.people_registry",
+        },
+        "airtable": {
+            "_target_label": "Dados Cadastrais / People Registry",
+            "_service": "app.services.people_registry_airtable_sync",
+            "_settings_keys": [
+                "AIRTABLE_PEOPLE_REGISTRY_BASE_ID",
+                "AIRTABLE_BASE_ID",
+                "AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE",
+            ],
+            "base_id_override": None,
+            "people_registry_table_override": None,
+        },
+        "drive": {
+            "_target_label": "Nao mapeado para sync operacional nesta etapa",
+            "_service": None,
+            "_settings_keys": [],
+        },
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Defaults por workflow — reproduzem o comportamento em producao em 07/05/2026.
@@ -32,7 +140,7 @@ _WORKFLOW_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "airtable_sync_enabled": True,
         "drive_sync_enabled": True,
         "edit_mode_enabled": True,
-        "extra_settings": {},
+        "extra_settings": _OPERATIONAL_EXTRA_SETTINGS["release_intake"],
     },
     "rights_clearance": {
         "post_submit_email_enabled": True,
@@ -40,7 +148,7 @@ _WORKFLOW_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "airtable_sync_enabled": True,
         "drive_sync_enabled": True,
         "edit_mode_enabled": True,
-        "extra_settings": {},
+        "extra_settings": _OPERATIONAL_EXTRA_SETTINGS["rights_clearance"],
     },
     "company_registry": {
         "post_submit_email_enabled": True,
@@ -49,7 +157,7 @@ _WORKFLOW_DEFAULTS: Dict[str, Dict[str, Any]] = {
         # drive_sync_enabled=False: pastas especificas ainda a configurar no Fly.io
         "drive_sync_enabled": False,
         "edit_mode_enabled": True,
-        "extra_settings": {},
+        "extra_settings": _OPERATIONAL_EXTRA_SETTINGS["company_registry"],
     },
     "people_registry": {
         # Email gerido pela arquitetura propria do people_registry (nao por submissions.py)
@@ -58,7 +166,7 @@ _WORKFLOW_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "airtable_sync_enabled": True,
         "drive_sync_enabled": False,
         "edit_mode_enabled": True,
-        "extra_settings": {},
+        "extra_settings": _OPERATIONAL_EXTRA_SETTINGS["people_registry"],
     },
 }
 
@@ -82,8 +190,18 @@ _SETTINGS_FIELDS = [
 ]
 
 
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge_dict(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
 def _get_defaults(workflow_type: str) -> Dict[str, Any]:
-    return dict(_WORKFLOW_DEFAULTS.get(workflow_type, _UNKNOWN_WORKFLOW_DEFAULT))
+    return copy.deepcopy(_WORKFLOW_DEFAULTS.get(workflow_type, _UNKNOWN_WORKFLOW_DEFAULT))
 
 
 def get_workflow_settings(
@@ -133,7 +251,13 @@ def get_workflow_settings(
     effective = _get_defaults(workflow_type)
     for field in _SETTINGS_FIELDS:
         if field in row and row[field] is not None:
-            effective[field] = row[field]
+            if field == "extra_settings" and isinstance(row[field], dict):
+                effective[field] = _deep_merge_dict(
+                    effective.get("extra_settings") or {},
+                    row[field],
+                )
+            else:
+                effective[field] = row[field]
 
     logger.debug(
         "workspace_config: config carregada workspace=%s workflow=%s",
@@ -141,6 +265,21 @@ def get_workflow_settings(
         workflow_type,
     )
     return effective
+
+
+def get_workflow_operational_base(workflow_type: str) -> Dict[str, Any]:
+    """
+    Retorna o mapa operacional herdavel de um workflow.
+
+    Nao le o banco: serve como baseline estrutural para documentacao,
+    validacoes internas e futuras gravacoes manuais/Setup AI em extra_settings.
+    """
+    extra_settings = _get_defaults(workflow_type).get("extra_settings") or {}
+    return {
+        "operational_base": copy.deepcopy(extra_settings.get("operational_base") or {}),
+        "airtable": copy.deepcopy(extra_settings.get("airtable") or {}),
+        "drive": copy.deepcopy(extra_settings.get("drive") or {}),
+    }
 
 
 def get_workflow_setting(
