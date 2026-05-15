@@ -89,14 +89,14 @@ _OPERATIONAL_EXTRA_SETTINGS: Dict[str, Dict[str, Any]] = {
             "service": "app.modules.submissions",
         },
         "airtable": {
-            "_target_label": "Company Registry / clientes efetivos",
+            "_target_label": "[V2] - Empresas",
             "_service": "app.services.airtable_company_registry",
             "_settings_keys": [
                 "AIRTABLE_BASE_ID",
                 "AIRTABLE_COMPANY_REGISTRY_TABLE_ID",
             ],
             "base_id_override": None,
-            "company_registry_table_override": None,
+            "company_registry_table_override": "[V2] - Empresas",
         },
         "drive": {
             "_target_label": "Nao mapeado para sync operacional nesta etapa",
@@ -111,7 +111,7 @@ _OPERATIONAL_EXTRA_SETTINGS: Dict[str, Dict[str, Any]] = {
             "service": "app.services.people_registry",
         },
         "airtable": {
-            "_target_label": "Dados Cadastrais / People Registry",
+            "_target_label": "[V2] - Pessoas",
             "_service": "app.services.people_registry_airtable_sync",
             "_settings_keys": [
                 "AIRTABLE_PEOPLE_REGISTRY_BASE_ID",
@@ -119,7 +119,7 @@ _OPERATIONAL_EXTRA_SETTINGS: Dict[str, Dict[str, Any]] = {
                 "AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE",
             ],
             "base_id_override": None,
-            "people_registry_table_override": None,
+            "people_registry_table_override": "[V2] - Pessoas",
         },
         "drive": {
             "_target_label": "Nao mapeado para sync operacional nesta etapa",

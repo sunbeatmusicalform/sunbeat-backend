@@ -72,7 +72,10 @@ class WorkspaceConfigOperationalBasesTests(unittest.TestCase):
             extra["airtable"]["_service"],
             "app.services.airtable_company_registry",
         )
-        self.assertIn("company_registry_table_override", extra["airtable"])
+        self.assertEqual(
+            extra["airtable"]["company_registry_table_override"],
+            "[V2] - Empresas",
+        )
         self.assertEqual(extra["drive"]["_service"], None)
 
     def test_partial_db_extra_settings_inherits_operational_defaults(self) -> None:
@@ -101,7 +104,7 @@ class WorkspaceConfigOperationalBasesTests(unittest.TestCase):
 
         airtable = settings["extra_settings"]["airtable"]
         self.assertEqual(airtable["base_id_override"], "appOverride")
-        self.assertIn("people_registry_table_override", airtable)
+        self.assertEqual(airtable["people_registry_table_override"], "[V2] - Pessoas")
         self.assertEqual(
             settings["extra_settings"]["operational_base"]["tables"],
             ["people_registry_records"],

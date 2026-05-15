@@ -1,8 +1,9 @@
 """
 Airtable sync para workflow company_registry.
 
-Tabela alvo: Company Registry (configuravel via AIRTABLE_COMPANY_REGISTRY_TABLE_ID).
-Se a variavel nao estiver definida, o sync e pulado com log de aviso.
+Tabela alvo: [V2] - Empresas.
+Configuravel via extra_settings.airtable.company_registry_table_override ou
+AIRTABLE_COMPANY_REGISTRY_TABLE_ID.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ from app.services.workspace_config import get_airtable_extra_config
 from app.schemas.submission import CompanyRegistrySubmissionPayload
 
 logger = logging.getLogger(__name__)
+
+COMPANY_REGISTRY_V2_TABLE = "[V2] - Empresas"
 
 
 def _get_airtable_client() -> Optional[Api]:
@@ -70,17 +73,38 @@ def _resolve_rep_email(rep: Any, legal: Any, contract: Any = None) -> str:
     return getattr(rep, "email", "") or ""
 
 
+def _yes_no(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip().lower()
+    return normalized if normalized in {"yes", "no"} else None
+
+
+def _resolve_table_name(airtable_extra: Dict[str, Any]) -> Optional[str]:
+    return (
+        airtable_extra.get("company_registry_table_override")
+        or getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
+        or COMPANY_REGISTRY_V2_TABLE
+    )
+
+
+def _clean_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
+    cleaned: Dict[str, Any] = {}
+    for key, value in fields.items():
+        if value is None:
+            continue
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                continue
+        cleaned[key] = value
+    return cleaned
+
+
 def _build_public_fields(payload: CompanyRegistrySubmissionPayload) -> Dict[str, Any]:
     """
     Constroi o dict de campos PUBLICOS para o Airtable.
 
-    Inclui: identificacao da empresa, endereco, responsaveis (legal, contrato,
-    financeiro), dados bancarios e workspace_slug.
-
-    NAO inclui campos submit-only (draft_token, meta.submitted_at) nem campos
-    internos da operacao (datas de contrato, status, financeiro interno etc.).
-    Campos submit-only sao adicionados apenas em sync_company_registry_to_airtable().
-    Campos internos nunca entram no payload publico.
+    Inclui apenas colunas existentes em [V2] - Empresas: identificacao da
+    empresa, endereco, responsaveis e dados bancarios.
     """
     cd = payload.company_data
     legal = payload.legal_representative
@@ -98,54 +122,61 @@ def _build_public_fields(payload: CompanyRegistrySubmissionPayload) -> Dict[str,
 
     fields: Dict[str, Any] = {
         # Identificacao
-        "Tipo de documento": cd.document_type.upper(),
-        "Numero do documento": cd.document_number,
         "Nome fantasia": cd.fantasy_name,
-        "Razao social": cd.legal_name,
+        "Tipo de documento": cd.document_type,
+        "Número do documento": cd.document_number,
+        "Razão social": cd.legal_name,
         # Endereco
-        "Endereco": cd.address,
+        "Endereço": cd.address,
         "Cidade": cd.city,
         "Estado": cd.state,
         "CEP": cd.zip_code,
         # Responsavel legal
-        "Resp. Legal - Nome": legal.name,
-        "Resp. Legal - Telefone": str(legal.phone),
-        "Resp. Legal - Email": str(legal.email),
+        "Nome do responsável legal": legal.name,
+        "Telefone do responsável legal": str(legal.phone),
+        "E-mail do responsável legal": str(legal.email),
         # Responsavel pelo contrato (com fallback para legal)
-        "Resp. Contrato - Nome": contract_name,
-        "Resp. Contrato - Telefone": contract_phone,
-        "Resp. Contrato - Email": contract_email,
+        "Mesmo que o responsável legal? (Contrato)": _yes_no(
+            getattr(contract, "same_as_legal", None)
+        ),
+        "Nome do responsável pelo contrato": contract_name,
+        "Telefone do responsável pelo contrato": contract_phone,
+        "E-mail do responsável pelo contrato": contract_email,
         # Responsavel financeiro (com fallback para legal/contrato)
-        "Resp. Financeiro - Nome": financial_name,
-        "Resp. Financeiro - Telefone": financial_phone,
-        "Resp. Financeiro - Email": financial_email,
+        "Mesmo que o responsável legal? (Financeiro)": _yes_no(
+            getattr(financial, "same_as_legal", None)
+        ),
+        "Mesmo que o responsável pelo contrato?": _yes_no(
+            getattr(financial, "same_as_contract", None)
+        ),
+        "Nome do responsável financeiro": financial_name,
+        "Telefone do responsável financeiro": financial_phone,
+        "E-mail do responsável financeiro": financial_email,
         # Dados bancarios
         "Banco": bank.bank_name,
-        "Agencia": bank.agency,
+        "Agência": bank.agency,
         "Conta": bank.account,
-        "Tipo de conta": "Conta corrente" if bank.account_type == "corrente" else "Conta poupanca",
-        # Meta
-        "Workspace": payload.workspace_slug,
+        "Tipo de conta": bank.account_type,
     }
 
     if bank.pix_key:
         fields["Chave Pix"] = bank.pix_key
 
-    return fields
+    return _clean_fields(fields)
 
 
 def sync_company_registry_to_airtable(
     payload: CompanyRegistrySubmissionPayload,
 ) -> Dict[str, Any]:
     """
-    Cria um registro na tabela Company Registry do Airtable.
+    Cria um registro na tabela [V2] - Empresas do Airtable.
 
-    Sincroniza campos publicos + campos submit-only (draft_token, submitted_at).
+    Sincroniza os campos publicos suportados pela tabela V2.
     Retorna dict com ok, status, record_id.
     """
     _at_extra = get_airtable_extra_config(str(payload.workspace_slug or ""), "company_registry")
     base_id = _at_extra.get("base_id_override") or getattr(settings, "AIRTABLE_BASE_ID", None)
-    table_id = _at_extra.get("company_registry_table_override") or getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
+    table_id = _resolve_table_name(_at_extra)
     enabled = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_ENABLED", False)
 
     if not enabled:
@@ -156,7 +187,7 @@ def sync_company_registry_to_airtable(
 
     if not base_id or not table_id:
         logger.warning(
-            "[company_registry] AIRTABLE_BASE_ID ou AIRTABLE_COMPANY_REGISTRY_TABLE_ID "
+            "[company_registry] AIRTABLE_BASE_ID ou tabela do Company Registry "
             "nao configurados — sync pulado"
         )
         return {"ok": True, "status": "not_configured"}
@@ -168,11 +199,6 @@ def sync_company_registry_to_airtable(
     # Campos publicos (identificacao, endereco, responsaveis, bancarios)
     fields = _build_public_fields(payload)
 
-    # Campos submit-only: gravados apenas no POST inicial, nunca no edit/resubmit
-    fields["Draft token"] = payload.draft_token
-    if payload.meta and payload.meta.submitted_at:
-        fields["Enviado em"] = payload.meta.submitted_at
-
     try:
         table = client.table(base_id, table_id)
         record = table.create(fields)
@@ -180,7 +206,7 @@ def sync_company_registry_to_airtable(
         logger.info(
             "[company_registry] Airtable record criado: %s | empresa: %s",
             record_id,
-            cd.legal_name,
+            payload.company_data.legal_name,
         )
         return {"ok": True, "status": "created", "record_id": record_id}
     except Exception as exc:
@@ -193,13 +219,13 @@ def update_company_registry_in_airtable(
     airtable_record_id: str,
 ) -> Dict[str, Any]:
     """
-    Atualiza um registro existente na tabela Company Registry do Airtable.
+    Atualiza um registro existente na tabela [V2] - Empresas do Airtable.
     Usado no fluxo de edit/resubmit. Sincroniza apenas campos publicos.
     Nao cria registro novo — exige airtable_record_id valido.
     """
     _at_extra = get_airtable_extra_config(str(payload.workspace_slug or ""), "company_registry")
     base_id = _at_extra.get("base_id_override") or getattr(settings, "AIRTABLE_BASE_ID", None)
-    table_id = _at_extra.get("company_registry_table_override") or getattr(settings, "AIRTABLE_COMPANY_REGISTRY_TABLE_ID", None)
+    table_id = _resolve_table_name(_at_extra)
     enabled = getattr(settings, "AIRTABLE_COMPANY_REGISTRY_ENABLED", False)
 
     if not enabled:
@@ -210,7 +236,7 @@ def update_company_registry_in_airtable(
 
     if not base_id or not table_id:
         logger.warning(
-            "[company_registry] AIRTABLE_BASE_ID ou AIRTABLE_COMPANY_REGISTRY_TABLE_ID "
+            "[company_registry] AIRTABLE_BASE_ID ou tabela do Company Registry "
             "nao configurados — update pulado"
         )
         return {"ok": True, "status": "not_configured"}
@@ -233,7 +259,7 @@ def update_company_registry_in_airtable(
         logger.info(
             "[company_registry] Airtable record atualizado: %s | empresa: %s",
             airtable_record_id,
-            cd.legal_name,
+            payload.company_data.legal_name,
         )
         return {"ok": True, "status": "updated", "record_id": airtable_record_id}
     except Exception as exc:
