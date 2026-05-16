@@ -10,8 +10,8 @@ Escopo: mapa operacional dos workflows reais da Atabaque. A fonte herdavel fica 
 | --- | --- | --- | --- | --- |
 | `release_intake` | Supabase via `app.modules.submissions` | `submissions`, `tracks`, `submissions_revisions` | `app.services.airtable` para projetos e faixas | `sync_submission_to_google_drive` |
 | `rights_clearance` | Supabase via `app.modules.submissions` | `submissions`, `tracks`, `submissions_revisions` | `app.services.airtable_rights_clearance` para case, itens e partes | `sync_clearance_to_google_drive` |
-| `company_registry` | Supabase via `app.modules.submissions` | `submissions`, `submissions_revisions` | `app.services.airtable_company_registry` para Company Registry/clientes efetivos | Nao mapeado nesta etapa |
-| `people_registry` | Supabase via `app.services.people_registry` | `people_registry_records` | `app.services.people_registry_airtable_sync` para Dados Cadastrais/People Registry | Nao mapeado nesta etapa |
+| `company_registry` | Supabase via `app.modules.submissions` | `submissions`, `submissions_revisions` | `app.services.airtable_company_registry` para `[V2] - Empresas` | Nao mapeado nesta etapa |
+| `people_registry` | Supabase via `app.services.people_registry` | `people_registry_records` | `app.services.people_registry_airtable_sync` para `[V2] - Pessoas` | Nao mapeado nesta etapa |
 
 ## Estrutura herdavel
 

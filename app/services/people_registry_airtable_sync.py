@@ -15,11 +15,26 @@ from app.schemas.people_registry import PeopleRegistryPreparedPayload
 
 AIRTABLE_API_URL = "https://api.airtable.com/v0"
 PEOPLE_REGISTRY_TABLE = "people_registry_records"
+PEOPLE_REGISTRY_V2_AIRTABLE_TABLE = "[V2] - Pessoas"
 REQUEST_TIMEOUT = 30.0
 MAX_RETRIES = 3
 RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 ATABAQUE_RESPONSIBLE_COMPANY = "Atabaque"
 ATABAQUE_RECEIVED_STATUS = "Informações Recebidas"
+PEOPLE_REGISTRY_ROLE_ALIASES = {
+    "artist": "artista",
+    "producer": "produtor",
+    "composer": "compositor",
+    "lyricist": "letrista",
+    "interpreter": "interprete",
+    "partner": "socio",
+    "manager": "assessor",
+    "label": "gravadora",
+    "distributor": "distribuidora",
+    "publisher": "editora",
+    "contact": "contato",
+    "responsible": "contato",
+}
 
 
 @dataclass(frozen=True)
@@ -48,6 +63,21 @@ def _utc_now_iso() -> str:
 def _normalized_text(value: Any) -> Optional[str]:
     text = str(value or "").strip()
     return text or None
+
+
+def _normalize_roles(roles: List[str]) -> List[str]:
+    normalized: List[str] = []
+    seen: set[str] = set()
+    for role in roles:
+        value = str(role or "").strip()
+        if not value:
+            continue
+        value = PEOPLE_REGISTRY_ROLE_ALIASES.get(value, value)
+        if value in seen:
+            continue
+        seen.add(value)
+        normalized.append(value)
+    return normalized
 
 
 def _join_nonempty(parts: List[Optional[str]], separator: str = ", ") -> Optional[str]:
@@ -162,7 +192,7 @@ def _normalized_document_lookup_formula(document_id: str) -> str:
         "SUBSTITUTE("
         "SUBSTITUTE("
         "SUBSTITUTE("
-        "SUBSTITUTE({CPF / CNPJ}, '.', ''), "
+        "SUBSTITUTE({Documento}, '.', ''), "
         "'-', ''), "
         "'/', ''), "
         "' ', '')="
@@ -181,6 +211,8 @@ def _clean_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
             value = value.strip()
             if value == "":
                 continue
+        if isinstance(value, list) and not value:
+            continue
 
         cleaned[key] = value
 
@@ -188,12 +220,10 @@ def _clean_fields(fields: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _atabaque_table_name() -> str:
-    table_name = (settings.AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE or "").strip()
-    if not table_name:
-        raise RuntimeError(
-            "Missing required environment variable: AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE"
-        )
-    return table_name
+    return (
+        (settings.AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE or "").strip()
+        or PEOPLE_REGISTRY_V2_AIRTABLE_TABLE
+    )
 
 
 def _atabaque_profile_configs() -> List[PeopleRegistryAirtableProfileConfig]:
@@ -232,57 +262,49 @@ def _build_atabaque_airtable_fields(
     record_id: str,
     prepared: PeopleRegistryPreparedPayload,
 ) -> Dict[str, Any]:
+    del record_id
     is_pf = prepared.party.party_kind == "pf"
     display_name = (
         prepared.party.stage_name
         if is_pf
         else prepared.party.trade_name or prepared.party.display_name
     )
-    address_text = _build_address_text(prepared)
+    street_address = _join_nonempty(
+        [prepared.address.address_line_1, prepared.address.address_line_2],
+        separator="\n",
+    )
     notes_text = _build_notes_text(prepared)
 
     fields: Dict[str, Any] = {
-        "idpessoa": record_id,
-        "Pessoa Física ou Jurídica?": "Física" if is_pf else "Jurídica",
-        "Endereço de e-mail": prepared.contact.email_primary,
-        "Empresa Responsável": ATABAQUE_RESPONSIBLE_COMPANY,
-        "Status Dados Cadastrais": ATABAQUE_RECEIVED_STATUS,
-        "Observações": notes_text,
+        "Nome de exibição": prepared.party.display_name,
+        "Tipo de pessoa": prepared.party.party_kind,
+        "Nome legal / Razão social": prepared.party.legal_name,
+        "Documento": prepared.party.document_id,
+        "Funções": _normalize_roles(prepared.party.roles),
+        "E-mail principal": prepared.contact.email_primary,
+        "Telefone principal": prepared.contact.phone_primary,
+        "Site": prepared.contact.website,
+        "Instagram": prepared.contact.instagram,
+        "País": prepared.address.country,
+        "Estado / Região": prepared.address.state_region,
+        "Cidade": prepared.address.city,
+        "CEP": prepared.address.postal_code,
+        "Endereço": street_address,
+        "Chave Pix": prepared.banking.pix_key,
+        "Banco": prepared.banking.bank_name,
+        "Agência": prepared.banking.bank_agency,
+        "Conta": prepared.banking.account_number,
+        "Nome do titular da conta": prepared.banking.account_holder_name,
+        "Documento do titular da conta": prepared.banking.account_holder_document_id,
+        "Nome do empresário / responsável": prepared.additional_info.manager_name,
+        "Selo / gravadora": prepared.additional_info.label_name,
+        "Observações internas": notes_text,
     }
 
     if is_pf:
-        fields.update(
-            {
-                "Nome Completo:": prepared.party.legal_name,
-                "Nome Artístico:": display_name or prepared.party.display_name,
-                "CPF:": prepared.party.document_id,
-                "Telefone:": prepared.contact.phone_primary,
-                "Endereço Completo (Rua, Numero, Bairro, Cidade e Estado):": address_text,
-                "Banco1:": prepared.banking.bank_name,
-                "Agência1:": prepared.banking.bank_agency,
-                "Conta1:": prepared.banking.account_number,
-                "Nome do titular da conta:": prepared.banking.account_holder_name,
-                "CPF ou CNPJ do titular da conta1:": prepared.banking.account_holder_document_id,
-                "Pix1:": prepared.banking.pix_key,
-                "E-mail para envio de contratos e relatórios1:": prepared.contact.email_primary,
-            }
-        )
+        fields["Nome artístico"] = display_name or prepared.party.display_name
     else:
-        fields.update(
-            {
-                "Razão Social:": prepared.party.legal_name,
-                "Nome Fantasia:": display_name or prepared.party.display_name,
-                "CNPJ:": prepared.party.document_id,
-                "Endereço CNPJ": address_text,
-                "Banco:": prepared.banking.bank_name,
-                "Agência:": prepared.banking.bank_agency,
-                "Conta:": prepared.banking.account_number,
-                "Titular da conta:": prepared.banking.account_holder_name,
-                "CPF ou CNPJ do titular da conta:": prepared.banking.account_holder_document_id,
-                "Pix:": prepared.banking.pix_key,
-                "E-mail para envio de Contratos e Relatórios:": prepared.contact.email_primary,
-            }
-        )
+        fields["Nome fantasia"] = display_name or prepared.party.display_name
 
     return _clean_fields(fields)
 
@@ -316,7 +338,7 @@ def _find_existing_airtable_record(
     email_primary = _normalized_text(prepared.contact.email_primary)
     if email_primary:
         lowered_email = _escape_airtable_formula_value(email_primary.lower())
-        formula = f"LOWER({{Endereço de e-mail}})='{lowered_email}'"
+        formula = f"LOWER({{E-mail principal}})='{lowered_email}'"
         record = _find_airtable_record_by_formula(table_url=table_url, formula=formula)
         if record:
             return record, "email_primary"

@@ -50,10 +50,10 @@ class Settings(BaseSettings):
     AIRTABLE_PEOPLE_REGISTRY_SYNC_ENABLED: bool = Field(default=False)
     AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_ENABLED: bool = Field(default=False)
     AIRTABLE_PEOPLE_REGISTRY_BASE_ID: str | None = Field(default=None)
-    AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE: str = Field(default="Dados Cadastrais")
+    AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE: str = Field(default="[V2] - Pessoas")
     AIRTABLE_RIGHTS_CLEARANCE_MUSICAL_ENABLED: bool = Field(default=False)
     AIRTABLE_COMPANY_REGISTRY_ENABLED: bool = Field(default=False)
-    AIRTABLE_COMPANY_REGISTRY_TABLE_ID: str | None = Field(default=None)
+    AIRTABLE_COMPANY_REGISTRY_TABLE_ID: str | None = Field(default="[V2] - Empresas")
 
     GOOGLE_DRIVE_ENABLED: bool = Field(default=False)
     GOOGLE_DRIVE_ROOT_FOLDER_ID: str | None = Field(default=None)

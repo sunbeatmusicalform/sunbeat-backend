@@ -1,32 +1,32 @@
 # People Registry Airtable Sync
 
-Este bloco conecta o `people_registry_records` do Supabase ao Airtable sem mudar a fonte canônica: o registro continua sendo persistido primeiro na Sunbeat, e só depois disso o sync roda.
+Este bloco conecta `people_registry_records` do Supabase ao Airtable sem mudar
+a fonte canonica: o registro continua sendo persistido primeiro na Sunbeat, e
+so depois disso o sync roda.
 
 ## Escopo atual
 
 - workflow: `people_registry`
 - workspace inicial: `atabaque`
-- profiles habilitáveis:
+- profiles habilitaveis:
   - `atabaque_people_v1`
   - `atabaque_cadastro_v1`
   - `operational_contact`
 
 ## Tabela Airtable
 
-- tabela alvo atual: `Dados Cadastrais`
-- merge key principal: `CPF / CNPJ`
-- fallback de merge: `Endereço de e-mail`
-
-Observação: a tabela `Dados Cadastrais` usa vários campos fórmula para leitura consolidada. O sync escreve nos campos PF/PJ subjacentes corretos e usa os campos fórmula apenas para lookup.
+- tabela alvo atual: `[V2] - Pessoas`
+- merge key principal: `Documento`
+- fallback de merge: `E-mail principal`
 
 ## Status local de sync
 
-Como o schema atual do Supabase ainda não tem o valor `skipped`, este bloco usa:
+Como o schema atual do Supabase ainda nao tem o valor `skipped`, este bloco usa:
 
-- `pending`: registro recém-persistido e ainda não sincronizado
-- `synced`: create/update no Airtable concluído
+- `pending`: registro recem-persistido e ainda nao sincronizado
+- `synced`: create/update no Airtable concluido
 - `failed`: tentativa de sync falhou
-- `blocked`: equivalente local de `skipped` enquanto o schema não for expandido
+- `blocked`: equivalente local de `skipped` enquanto o schema nao for expandido
 
 Os campos atualizados em `people_registry_records` continuam sendo:
 
@@ -36,56 +36,54 @@ Os campos atualizados em `people_registry_records` continuam sendo:
 - `airtable_table_name`
 - `airtable_record_id`
 
-## Ativação por config/env
+## Ativacao por config/env
 
-O sync só roda quando os dois toggles abaixo estão `true`:
+O sync so roda quando os dois toggles abaixo estao `true`:
 
 - `AIRTABLE_PEOPLE_REGISTRY_SYNC_ENABLED`
 - `AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_ENABLED`
 
-Configuração adicional:
+Configuracao adicional:
 
 - `AIRTABLE_PEOPLE_REGISTRY_BASE_ID`
   - opcional; se vazio, usa `AIRTABLE_BASE_ID`
 - `AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE`
-  - padrão atual: `Dados Cadastrais`
+  - fallback atual: `[V2] - Pessoas`
+- `workspace_workflow_settings.extra_settings.airtable.people_registry_table_override`
+  - override preferencial por workspace + workflow
 
 ## Campos escritos
 
-Campos comuns:
+Campos comuns em `[V2] - Pessoas`:
 
-- `idpessoa`
-- `Pessoa Física ou Jurídica?`
-- `Endereço de e-mail`
-- `Empresa Responsável`
-- `Status Dados Cadastrais`
-- `Observações`
+- `Nome de exibição`
+- `Tipo de pessoa`
+- `Nome legal / Razão social`
+- `Documento`
+- `Funções`
+- `E-mail principal`
+- `Telefone principal`
+- `Site`
+- `Instagram`
+- `País`
+- `Estado / Região`
+- `Cidade`
+- `CEP`
+- `Endereço`
+- `Chave Pix`
+- `Banco`
+- `Agência`
+- `Conta`
+- `Nome do titular da conta`
+- `Documento do titular da conta`
+- `Nome do empresário / responsável`
+- `Selo / gravadora`
+- `Observações internas`
 
-Campos PF:
+Campo PF adicional:
 
-- `Nome Completo:`
-- `Nome Artístico:`
-- `CPF:`
-- `Telefone:`
-- `Endereço Completo (Rua, Numero, Bairro, Cidade e Estado):`
-- `Banco1:`
-- `Agência1:`
-- `Conta1:`
-- `Nome do titular da conta:`
-- `CPF ou CNPJ do titular da conta1:`
-- `Pix1:`
-- `E-mail para envio de contratos e relatórios1:`
+- `Nome artístico`
 
-Campos PJ:
+Campo PJ adicional:
 
-- `Razão Social:`
-- `Nome Fantasia:`
-- `CNPJ:`
-- `Endereço CNPJ`
-- `Banco:`
-- `Agência:`
-- `Conta:`
-- `Titular da conta:`
-- `CPF ou CNPJ do titular da conta:`
-- `Pix:`
-- `E-mail para envio de Contratos e Relatórios:`
+- `Nome fantasia`

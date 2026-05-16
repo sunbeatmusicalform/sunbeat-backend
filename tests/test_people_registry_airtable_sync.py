@@ -72,7 +72,7 @@ class PeopleRegistryAirtableSyncTests(unittest.TestCase):
             patch.object(sync_service.settings, "AIRTABLE_PEOPLE_REGISTRY_SYNC_ENABLED", True),
             patch.object(sync_service.settings, "AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_ENABLED", True),
             patch.object(sync_service.settings, "AIRTABLE_PEOPLE_REGISTRY_BASE_ID", "appBase123"),
-            patch.object(sync_service.settings, "AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE", "Dados Cadastrais"),
+            patch.object(sync_service.settings, "AIRTABLE_PEOPLE_REGISTRY_ATABAQUE_TABLE", "[V2] - Pessoas"),
             patch.object(sync_service.settings, "AIRTABLE_API_KEY", "key123"),
             patch.object(sync_service, "_request_json", side_effect=request_side_effect) as request_mock,
             patch.object(sync_service, "_update_local_sync_state") as update_state_mock,
@@ -87,14 +87,34 @@ class PeopleRegistryAirtableSyncTests(unittest.TestCase):
         self.assertEqual(result.action, "updated")
         self.assertEqual(result.merge_key, "email_primary")
         self.assertIn(
-            "SUBSTITUTE({CPF / CNPJ}",
+            "SUBSTITUTE({Documento}",
             request_mock.call_args_list[0].kwargs["params"]["filterByFormula"],
         )
         self.assertIn(
-            "LOWER({Endereço de e-mail})",
+            "LOWER({E-mail principal})",
             request_mock.call_args_list[1].kwargs["params"]["filterByFormula"],
         )
         self.assertEqual(update_state_mock.call_args.kwargs["status"], "synced")
+
+    def test_build_fields_targets_v2_pessoas_columns(self) -> None:
+        prepared = people_registry_service.normalize_people_registry_payload(_payload())
+
+        fields = sync_service._build_atabaque_airtable_fields(
+            record_id="rec-local-v2",
+            prepared=prepared,
+        )
+
+        self.assertEqual(fields["Nome de exibição"], "Ana Sol")
+        self.assertEqual(fields["Tipo de pessoa"], "pf")
+        self.assertEqual(fields["Nome legal / Razão social"], "Ana Maria Silva")
+        self.assertEqual(fields["Documento"], "123.456.789-00")
+        self.assertEqual(fields["Funções"], ["artista", "contato"])
+        self.assertEqual(fields["E-mail principal"], "ana@example.com")
+        self.assertEqual(fields["Telefone principal"], "+5511999999999")
+        self.assertEqual(fields["Nome artístico"], "Ana Sol")
+        self.assertEqual(fields["Chave Pix"], "ana@example.com")
+        self.assertNotIn("idpessoa", fields)
+        self.assertNotIn("Status Dados Cadastrais", fields)
 
     def test_create_response_runs_sync_after_persist_and_returns_updated_status(self) -> None:
         payload = _payload()
