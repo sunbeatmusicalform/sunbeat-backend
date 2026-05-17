@@ -26,6 +26,9 @@ os overrides operacionais existentes, como `base_id_override`,
 `projects_table_override`, `company_registry_table_override` e
 `people_registry_table_override`.
 
+O contrato minimo do bloco `extra_settings.airtable` esta documentado em
+[`airtable-extra-settings-contract.md`](./airtable-extra-settings-contract.md).
+
 ## Divergencias atuais
 
 - `company_registry` e `people_registry` usam servicos de sync separados, como

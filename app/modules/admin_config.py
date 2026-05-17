@@ -9,8 +9,10 @@ Sem UI. Consumível por Postman, curl ou futura Setup AI.
 
 Rotas:
   GET   /internal/config/{workspace_slug}/{workflow_type}
+  GET   /internal/config/{workspace_slug}/{workflow_type}/airtable
   PATCH /internal/config/{workspace_slug}/{workflow_type}/flags
   PATCH /internal/config/{workspace_slug}/{workflow_type}/email
+  PATCH /internal/config/{workspace_slug}/{workflow_type}/airtable
 """
 from __future__ import annotations
 
@@ -19,10 +21,11 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.config import settings
 from app.core.database import supabase
+from app.services.workspace_config import get_workflow_operational_base
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +44,17 @@ _V1_FLAGS = [
 ]
 
 _EMAIL_EVENTS = ["on_draft", "on_submit", "on_edit", "on_first_stage", "on_summary"]
+
+_AIRTABLE_TABLE_OVERRIDE_KEYS: Dict[str, str] = {
+    "company_registry": "company_registry_table_override",
+    "people_registry": "people_registry_table_override",
+}
+
+_AIRTABLE_CONTRACT_KEYS = [
+    "base_id_override",
+    "merge_keys",
+    "field_map",
+]
 
 _ENV_FIELDS = [
     "GOOGLE_DRIVE_ENABLED",
@@ -106,6 +120,47 @@ class EmailEventsPatch(BaseModel):
 class EmailPatch(BaseModel):
     events:   Optional[EmailEventsPatch] = None
     variants: Optional[Dict[str, EmailEventsPatch]] = None
+
+
+class AirtableMergeKeyPatch(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    source: str = Field(..., min_length=1)
+    airtable_field: str = Field(..., min_length=1)
+    normalization: Optional[str] = None
+    priority: Optional[int] = None
+
+
+class AirtableExtraPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    base_id_override: Optional[str] = None
+    table_override: Optional[str] = None
+    company_registry_table_override: Optional[str] = None
+    people_registry_table_override: Optional[str] = None
+    merge_keys: Optional[List[AirtableMergeKeyPatch]] = None
+    field_map: Optional[Dict[str, Any]] = None
+
+    @field_validator(
+        "base_id_override",
+        "table_override",
+        "company_registry_table_override",
+        "people_registry_table_override",
+        mode="before",
+    )
+    @classmethod
+    def blank_strings_to_none(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+
+class AirtablePatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    airtable_sync_enabled: Optional[bool] = None
+    airtable: Optional[AirtableExtraPatch] = None
 
 
 # ---------------------------------------------------------------------------
@@ -182,6 +237,115 @@ def _resolve_email_with_origin(extra_settings: Optional[Dict[str, Any]]) -> Dict
     return {"events": events_out, "variants": variants_out}
 
 
+def _deep_merge_dict(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _deep_merge_dict(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def _airtable_table_override_key(workflow_type: str) -> Optional[str]:
+    return _AIRTABLE_TABLE_OVERRIDE_KEYS.get(workflow_type)
+
+
+def _airtable_defaults(workflow_type: str) -> Dict[str, Any]:
+    return get_workflow_operational_base(workflow_type).get("airtable") or {}
+
+
+def _raw_airtable_extra(row: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    extra = row.get("extra_settings") if row else None
+    if not isinstance(extra, dict):
+        return {}
+    airtable = extra.get("airtable") or {}
+    return airtable if isinstance(airtable, dict) else {}
+
+
+def _resolve_airtable_with_origin(
+    row: Optional[Dict[str, Any]],
+    workflow_type: str,
+) -> Dict[str, Any]:
+    defaults = _airtable_defaults(workflow_type)
+    raw = _raw_airtable_extra(row)
+    effective = _deep_merge_dict(defaults, raw)
+    table_key = _airtable_table_override_key(workflow_type)
+
+    keys = set(defaults.keys()) | set(raw.keys()) | set(_AIRTABLE_CONTRACT_KEYS)
+    if table_key:
+        keys.add(table_key)
+
+    origins = {
+        key: "db" if key in raw else "default" if key in defaults else "missing"
+        for key in sorted(keys)
+    }
+
+    return {
+        "effective": effective,
+        "raw": raw,
+        "origins": origins,
+        "contract": {
+            "table_override_key": table_key,
+            "accepted_table_override_aliases": (
+                ["table_override", table_key] if table_key else []
+            ),
+            "field_map_runtime": "service_owned",
+            "merge_keys_runtime": "service_owned",
+        },
+    }
+
+
+def _normalize_airtable_patch(
+    workflow_type: str,
+    patch: AirtableExtraPatch,
+) -> Dict[str, Any]:
+    fields = patch.model_dump(exclude_unset=True, mode="json")
+    table_key = _airtable_table_override_key(workflow_type)
+
+    if "table_override" in fields:
+        table_override = fields.pop("table_override")
+        if not table_key:
+            raise HTTPException(
+                status_code=422,
+                detail="table_override is not supported for this workflow_type",
+            )
+        if table_key in fields and fields[table_key] != table_override:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "table_override conflicts with "
+                    f"{table_key} for workflow_type={workflow_type}"
+                ),
+            )
+        fields[table_key] = table_override
+
+    for candidate_key in _AIRTABLE_TABLE_OVERRIDE_KEYS.values():
+        if candidate_key in fields and candidate_key != table_key:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{candidate_key} is not valid for workflow_type={workflow_type}"
+                ),
+            )
+
+    return fields
+
+
+def _deep_merge_airtable(
+    current_extra: Dict[str, Any],
+    workflow_type: str,
+    patch: AirtableExtraPatch,
+) -> tuple[Dict[str, Any], List[str]]:
+    normalized = _normalize_airtable_patch(workflow_type, patch)
+    result = copy.deepcopy(current_extra)
+    current_airtable = result.get("airtable") or {}
+    if not isinstance(current_airtable, dict):
+        current_airtable = {}
+    result["airtable"] = _deep_merge_dict(current_airtable, normalized)
+    return result, sorted(normalized.keys())
+
+
 def _env_snapshot() -> Dict[str, Any]:
     return {
         field: {"value": getattr(settings, field, None), "_origin": "env"}
@@ -243,7 +407,27 @@ async def get_config(
         "workflow_type":  workflow_type,
         "flags":          _resolve_flags_with_origin(row, workflow_type),
         "email":          _resolve_email_with_origin(extra),
+        "airtable":       _resolve_airtable_with_origin(row, workflow_type),
         "env_snapshot":   _env_snapshot(),
+    }
+
+
+@router.get("/{workspace_slug}/{workflow_type}/airtable")
+async def get_airtable_config(
+    workspace_slug: str,
+    workflow_type: str,
+    _: None = Depends(_require_admin_token),
+) -> Dict[str, Any]:
+    """Retorna contrato efetivo de extra_settings.airtable para leitura assistida."""
+    row = _read_raw_row(workspace_slug, workflow_type)
+    return {
+        "workspace_slug": workspace_slug,
+        "workflow_type": workflow_type,
+        "airtable_sync_enabled": _resolve_flags_with_origin(
+            row,
+            workflow_type,
+        )["airtable_sync_enabled"],
+        "airtable": _resolve_airtable_with_origin(row, workflow_type),
     }
 
 
@@ -332,3 +516,76 @@ async def patch_email(
                     updated_variants.append(f"{vname}.{ev}")
 
     return {"ok": True, "updated_events": updated_events, "updated_variants": updated_variants}
+
+
+@router.patch("/{workspace_slug}/{workflow_type}/airtable")
+async def patch_airtable(
+    workspace_slug: str,
+    workflow_type: str,
+    body: AirtablePatch,
+    _: None = Depends(_require_admin_token),
+) -> Dict[str, Any]:
+    """
+    Atualiza parcialmente a configuracao Airtable do workflow.
+
+    Escreve flags efetivas nas colunas top-level e faz deep merge apenas em
+    `extra_settings.airtable`, preservando `email`, `drive`, `operational_base`
+    e quaisquer outros blocos existentes.
+    """
+    has_flag = "airtable_sync_enabled" in body.model_fields_set
+    has_airtable_patch = (
+        body.airtable is not None and bool(body.airtable.model_fields_set)
+    )
+
+    if not has_flag and not has_airtable_patch:
+        return {
+            "ok": True,
+            "updated": [],
+            "airtable_updated": [],
+        }
+
+    payload: Dict[str, Any] = {
+        "workspace_slug": workspace_slug,
+        "workflow_type": workflow_type,
+    }
+    updated: List[str] = []
+    airtable_updated: List[str] = []
+
+    if has_flag:
+        payload["airtable_sync_enabled"] = body.airtable_sync_enabled
+        updated.append("airtable_sync_enabled")
+
+    if has_airtable_patch and body.airtable is not None:
+        row = _read_raw_row(workspace_slug, workflow_type)
+        current_extra: Dict[str, Any] = (
+            row.get("extra_settings") or {}
+        ) if row else {}
+        if not isinstance(current_extra, dict):
+            current_extra = {}
+
+        merged, airtable_updated = _deep_merge_airtable(
+            current_extra,
+            workflow_type,
+            body.airtable,
+        )
+        payload["extra_settings"] = merged
+        updated.append("extra_settings.airtable")
+
+    try:
+        supabase.table("workspace_workflow_settings").upsert(
+            payload,
+            on_conflict="workspace_slug,workflow_type",
+        ).execute()
+    except Exception as exc:
+        logger.error(
+            "admin_config: erro ao gravar airtable workspace=%s workflow=%s: %s",
+            workspace_slug, workflow_type, exc,
+        )
+        raise HTTPException(status_code=500, detail=f"Erro ao gravar airtable: {exc}")
+
+    return {
+        "ok": True,
+        "updated": updated,
+        "airtable_updated": airtable_updated,
+        "table_override_key": _airtable_table_override_key(workflow_type),
+    }
