@@ -46,6 +46,7 @@ demais configuracoes internas:
 
 - `GET /internal/config/{workspace_slug}/{workflow_type}/airtable`
 - `PATCH /internal/config/{workspace_slug}/{workflow_type}/airtable`
+- `POST /internal/config/setup-ai/airtable`
 
 O `GET` retorna `airtable_sync_enabled`, `effective`, `raw`, `origins` e o
 metadata de contrato. O `PATCH` aceita escrita parcial:
@@ -64,6 +65,64 @@ metadata de contrato. O `PATCH` aceita escrita parcial:
 especifica do workflow (`company_registry_table_override` ou
 `people_registry_table_override`) para preservar compatibilidade com os services
 atuais.
+
+### Consumidor interno minimo da futura Setup AI
+
+O endpoint `POST /internal/config/setup-ai/airtable` e uma action estruturada
+para leitura/escrita assistida. Ele nao aceita linguagem natural, nao executa
+sync, nao altera endpoints publicos e nao cria uma camada paralela de
+configuracao.
+
+Leitura:
+
+```json
+{
+  "operation": "read",
+  "workspace_slug": "atabaque",
+  "workflow_type": "company_registry"
+}
+```
+
+Patch parcial:
+
+```json
+{
+  "operation": "patch",
+  "workspace_slug": "atabaque",
+  "workflow_type": "people_registry",
+  "airtable_sync_enabled": true,
+  "airtable": {
+    "table_override": "[V2] - Pessoas",
+    "merge_keys": [
+      {
+        "source": "party.document_id",
+        "airtable_field": "Documento",
+        "priority": 1
+      }
+    ]
+  }
+}
+```
+
+A resposta e estavel para consumo assistido e inclui:
+
+- `ok`
+- `operation`
+- `workspace_slug`
+- `workflow_type`
+- `contract_version`
+- `source`
+- `airtable_sync_enabled`
+- `effective`
+- `raw`
+- `origins`
+- `contract`
+- `applied_patch`
+- `warnings`
+
+Nesta etapa, `merge_keys` e `field_map` continuam metadata. Quando enviados
+pelo consumidor interno, a resposta inclui `warnings` deixando explicito que os
+sync services seguem donos da politica runtime.
 
 ### Chaves comuns
 

@@ -13,15 +13,16 @@ Rotas:
   PATCH /internal/config/{workspace_slug}/{workflow_type}/flags
   PATCH /internal/config/{workspace_slug}/{workflow_type}/email
   PATCH /internal/config/{workspace_slug}/{workflow_type}/airtable
+  POST  /internal/config/setup-ai/airtable
 """
 from __future__ import annotations
 
 import copy
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Header
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.config import settings
 from app.core.database import supabase
@@ -55,6 +56,13 @@ _AIRTABLE_CONTRACT_KEYS = [
     "merge_keys",
     "field_map",
 ]
+
+_SETUP_AI_AIRTABLE_CONTRACT_VERSION = "airtable_extra_settings.v1"
+
+_SETUP_AI_AIRTABLE_WORKFLOWS = {
+    "company_registry",
+    "people_registry",
+}
 
 _ENV_FIELDS = [
     "GOOGLE_DRIVE_ENABLED",
@@ -161,6 +169,41 @@ class AirtablePatch(BaseModel):
 
     airtable_sync_enabled: Optional[bool] = None
     airtable: Optional[AirtableExtraPatch] = None
+
+
+class SetupAIAirtableConfigAction(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    operation: Literal["read", "patch"]
+    workspace_slug: str = Field(..., min_length=1)
+    workflow_type: str = Field(..., min_length=1)
+    airtable_sync_enabled: Optional[bool] = None
+    airtable: Optional[AirtableExtraPatch] = None
+
+    @field_validator("workspace_slug", "workflow_type", mode="before")
+    @classmethod
+    def strip_required_strings(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @model_validator(mode="after")
+    def validate_operation_payload(self) -> "SetupAIAirtableConfigAction":
+        has_flag = "airtable_sync_enabled" in self.model_fields_set
+        has_airtable_field = "airtable" in self.model_fields_set
+        has_airtable_patch = (
+            self.airtable is not None and bool(self.airtable.model_fields_set)
+        )
+
+        if self.operation == "read" and (has_flag or has_airtable_field):
+            raise ValueError("read operation does not accept patch fields")
+
+        if self.operation == "patch" and not (has_flag or has_airtable_patch):
+            raise ValueError(
+                "patch operation requires airtable_sync_enabled or airtable fields"
+            )
+
+        return self
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +387,149 @@ def _deep_merge_airtable(
         current_airtable = {}
     result["airtable"] = _deep_merge_dict(current_airtable, normalized)
     return result, sorted(normalized.keys())
+
+
+def _apply_airtable_patch(
+    workspace_slug: str,
+    workflow_type: str,
+    body: AirtablePatch,
+) -> Dict[str, Any]:
+    """
+    Aplica o mesmo patch parcial usado pela rota PATCH interna.
+
+    Mantem a escrita limitada as colunas top-level conhecidas e ao bloco
+    `extra_settings.airtable`, sem tocar em sync services ou submit publico.
+    """
+    has_flag = "airtable_sync_enabled" in body.model_fields_set
+    has_airtable_patch = (
+        body.airtable is not None and bool(body.airtable.model_fields_set)
+    )
+
+    if not has_flag and not has_airtable_patch:
+        return {
+            "ok": True,
+            "updated": [],
+            "airtable_updated": [],
+            "table_override_key": _airtable_table_override_key(workflow_type),
+        }
+
+    payload: Dict[str, Any] = {
+        "workspace_slug": workspace_slug,
+        "workflow_type": workflow_type,
+    }
+    updated: List[str] = []
+    airtable_updated: List[str] = []
+
+    if has_flag:
+        payload["airtable_sync_enabled"] = body.airtable_sync_enabled
+        updated.append("airtable_sync_enabled")
+
+    if has_airtable_patch and body.airtable is not None:
+        row = _read_raw_row(workspace_slug, workflow_type)
+        current_extra: Dict[str, Any] = (
+            row.get("extra_settings") or {}
+        ) if row else {}
+        if not isinstance(current_extra, dict):
+            current_extra = {}
+
+        merged, airtable_updated = _deep_merge_airtable(
+            current_extra,
+            workflow_type,
+            body.airtable,
+        )
+        payload["extra_settings"] = merged
+        updated.append("extra_settings.airtable")
+
+    try:
+        supabase.table("workspace_workflow_settings").upsert(
+            payload,
+            on_conflict="workspace_slug,workflow_type",
+        ).execute()
+    except Exception as exc:
+        logger.error(
+            "admin_config: erro ao gravar airtable workspace=%s workflow=%s: %s",
+            workspace_slug, workflow_type, exc,
+        )
+        raise HTTPException(status_code=500, detail=f"Erro ao gravar airtable: {exc}")
+
+    return {
+        "ok": True,
+        "updated": updated,
+        "airtable_updated": airtable_updated,
+        "table_override_key": _airtable_table_override_key(workflow_type),
+    }
+
+
+def _validate_setup_ai_airtable_workflow(workflow_type: str) -> None:
+    if workflow_type not in _SETUP_AI_AIRTABLE_WORKFLOWS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "workflow_type is not supported by the setup AI Airtable "
+                "config consumer"
+            ),
+        )
+
+
+def _setup_ai_airtable_warnings(body: AirtablePatch) -> List[str]:
+    if body.airtable is None:
+        return []
+
+    warnings: List[str] = []
+    fields = body.airtable.model_fields_set
+    if "merge_keys" in fields:
+        warnings.append(
+            "merge_keys is metadata only in this phase; sync services keep "
+            "their runtime merge policy."
+        )
+    if "field_map" in fields:
+        warnings.append(
+            "field_map is metadata only in this phase; sync services keep "
+            "their runtime payload builders."
+        )
+    return warnings
+
+
+def _setup_ai_applied_patch(
+    workflow_type: str,
+    body: AirtablePatch,
+) -> Dict[str, Any]:
+    applied: Dict[str, Any] = {}
+    if "airtable_sync_enabled" in body.model_fields_set:
+        applied["airtable_sync_enabled"] = body.airtable_sync_enabled
+
+    if body.airtable is not None and body.airtable.model_fields_set:
+        applied["airtable"] = _normalize_airtable_patch(workflow_type, body.airtable)
+
+    return applied
+
+
+def _setup_ai_airtable_response(
+    workspace_slug: str,
+    workflow_type: str,
+    operation: Literal["read", "patch"],
+    row: Optional[Dict[str, Any]],
+    applied_patch: Optional[Dict[str, Any]] = None,
+    warnings: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    flags = _resolve_flags_with_origin(row, workflow_type)
+    airtable = _resolve_airtable_with_origin(row, workflow_type)
+
+    return {
+        "ok": True,
+        "operation": operation,
+        "workspace_slug": workspace_slug,
+        "workflow_type": workflow_type,
+        "contract_version": _SETUP_AI_AIRTABLE_CONTRACT_VERSION,
+        "source": "workspace_workflow_settings.extra_settings.airtable",
+        "airtable_sync_enabled": flags["airtable_sync_enabled"],
+        "effective": airtable["effective"],
+        "raw": airtable["raw"],
+        "origins": airtable["origins"],
+        "contract": airtable["contract"],
+        "applied_patch": applied_patch or {},
+        "warnings": warnings or [],
+    }
 
 
 def _env_snapshot() -> Dict[str, Any]:
@@ -532,60 +718,52 @@ async def patch_airtable(
     `extra_settings.airtable`, preservando `email`, `drive`, `operational_base`
     e quaisquer outros blocos existentes.
     """
-    has_flag = "airtable_sync_enabled" in body.model_fields_set
-    has_airtable_patch = (
-        body.airtable is not None and bool(body.airtable.model_fields_set)
+    return _apply_airtable_patch(workspace_slug, workflow_type, body)
+
+
+@router.post("/setup-ai/airtable")
+async def setup_ai_airtable_config_action(
+    body: SetupAIAirtableConfigAction,
+    _: None = Depends(_require_admin_token),
+) -> Dict[str, Any]:
+    """
+    Consumidor interno minimo para futura Setup AI.
+
+    Aceita apenas operacoes estruturadas de leitura ou patch parcial do contrato
+    Airtable ja existente. Nao interpreta linguagem natural, nao orquestra sync
+    e nao altera runtime de `merge_keys` ou `field_map`.
+    """
+    _validate_setup_ai_airtable_workflow(body.workflow_type)
+
+    if body.operation == "read":
+        row = _read_raw_row(body.workspace_slug, body.workflow_type)
+        return _setup_ai_airtable_response(
+            body.workspace_slug,
+            body.workflow_type,
+            "read",
+            row,
+        )
+
+    patch_payload: Dict[str, Any] = {}
+    if "airtable_sync_enabled" in body.model_fields_set:
+        patch_payload["airtable_sync_enabled"] = body.airtable_sync_enabled
+    if body.airtable is not None:
+        patch_payload["airtable"] = body.airtable.model_dump(
+            exclude_unset=True,
+            mode="json",
+        )
+
+    patch_body = AirtablePatch.model_validate(patch_payload)
+    applied_patch = _setup_ai_applied_patch(body.workflow_type, patch_body)
+    warnings = _setup_ai_airtable_warnings(patch_body)
+    _apply_airtable_patch(body.workspace_slug, body.workflow_type, patch_body)
+
+    row = _read_raw_row(body.workspace_slug, body.workflow_type)
+    return _setup_ai_airtable_response(
+        body.workspace_slug,
+        body.workflow_type,
+        "patch",
+        row,
+        applied_patch=applied_patch,
+        warnings=warnings,
     )
-
-    if not has_flag and not has_airtable_patch:
-        return {
-            "ok": True,
-            "updated": [],
-            "airtable_updated": [],
-        }
-
-    payload: Dict[str, Any] = {
-        "workspace_slug": workspace_slug,
-        "workflow_type": workflow_type,
-    }
-    updated: List[str] = []
-    airtable_updated: List[str] = []
-
-    if has_flag:
-        payload["airtable_sync_enabled"] = body.airtable_sync_enabled
-        updated.append("airtable_sync_enabled")
-
-    if has_airtable_patch and body.airtable is not None:
-        row = _read_raw_row(workspace_slug, workflow_type)
-        current_extra: Dict[str, Any] = (
-            row.get("extra_settings") or {}
-        ) if row else {}
-        if not isinstance(current_extra, dict):
-            current_extra = {}
-
-        merged, airtable_updated = _deep_merge_airtable(
-            current_extra,
-            workflow_type,
-            body.airtable,
-        )
-        payload["extra_settings"] = merged
-        updated.append("extra_settings.airtable")
-
-    try:
-        supabase.table("workspace_workflow_settings").upsert(
-            payload,
-            on_conflict="workspace_slug,workflow_type",
-        ).execute()
-    except Exception as exc:
-        logger.error(
-            "admin_config: erro ao gravar airtable workspace=%s workflow=%s: %s",
-            workspace_slug, workflow_type, exc,
-        )
-        raise HTTPException(status_code=500, detail=f"Erro ao gravar airtable: {exc}")
-
-    return {
-        "ok": True,
-        "updated": updated,
-        "airtable_updated": airtable_updated,
-        "table_override_key": _airtable_table_override_key(workflow_type),
-    }
