@@ -16,6 +16,7 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
 from app.core.config import settings
+from app.core.database import supabase
 from app.services.workspace_config import get_drive_extra_config
 
 logger = logging.getLogger("sunbeat.google_drive")
@@ -252,6 +253,106 @@ def _ensure_folder(service: Any, *, parent_id: str, name: str) -> Dict[str, Any]
         parent_id,
     )
     return {"id": created["id"], "name": created["name"], "created": True}
+
+
+def _load_submission_google_drive_folder_id(submission_id: Optional[str]) -> Optional[str]:
+    if not submission_id:
+        return None
+
+    try:
+        result = (
+            supabase.table("submissions")
+            .select("google_drive_folder_id")
+            .eq("id", submission_id)
+            .limit(1)
+            .execute()
+        )
+    except Exception:
+        logger.exception(
+            "Google Drive folder id lookup failed submission_id=%s",
+            submission_id,
+        )
+        return None
+
+    row = (getattr(result, "data", None) or [None])[0] or {}
+    folder_id = row.get("google_drive_folder_id")
+    return str(folder_id).strip() if folder_id else None
+
+
+def _persist_submission_google_drive_folder_id(
+    submission_id: Optional[str],
+    folder_id: Optional[str],
+) -> bool:
+    if not submission_id or not folder_id:
+        return False
+
+    try:
+        (
+            supabase.table("submissions")
+            .update({"google_drive_folder_id": folder_id})
+            .eq("id", submission_id)
+            .execute()
+        )
+    except Exception:
+        logger.exception(
+            "Google Drive folder id persistence failed submission_id=%s folder_id=%s",
+            submission_id,
+            folder_id,
+        )
+        return False
+
+    return True
+
+
+def ensure_project_folder(service: Any, submission: Dict[str, Any]) -> Dict[str, Any]:
+    submission_id = str(submission.get("id") or "").strip()
+    parent_folder_id = str(submission.get("parent_folder_id") or "").strip()
+    folder_id = str(submission.get("google_drive_folder_id") or "").strip()
+    payload = submission.get("payload")
+    expected_name = _build_release_folder_name(payload)
+
+    if not parent_folder_id:
+        raise RuntimeError("Google Drive parent folder id is required")
+
+    existing_folder = _get_folder_by_id(service, folder_id)
+    if existing_folder:
+        renamed = False
+        if existing_folder.get("name") != expected_name:
+            updated = service.files().update(
+                fileId=existing_folder["id"],
+                body={"name": expected_name},
+                fields="id,name",
+                supportsAllDrives=True,
+            ).execute()
+            existing_folder = {
+                "id": updated.get("id") or existing_folder["id"],
+                "name": updated.get("name") or expected_name,
+            }
+            renamed = True
+
+        _persist_submission_google_drive_folder_id(
+            submission_id,
+            existing_folder["id"],
+        )
+        return {
+            "id": existing_folder["id"],
+            "name": existing_folder["name"],
+            "created": False,
+            "renamed": renamed,
+        }
+
+    release_folder = _ensure_folder(
+        service,
+        parent_id=parent_folder_id,
+        name=expected_name,
+    )
+    _persist_submission_google_drive_folder_id(submission_id, release_folder.get("id"))
+    return {
+        "id": release_folder["id"],
+        "name": release_folder["name"],
+        "created": bool(release_folder.get("created", False)),
+        "renamed": False,
+    }
 
 
 def _pick_file_url(file_ref: Any) -> Optional[str]:
@@ -523,17 +624,27 @@ def _resolve_parent_folder(service: Any, payload: Any) -> Tuple[str, Dict[str, A
     raise RuntimeError("Could not resolve Google Drive parent folder.")
 
 
-def sync_submission_to_google_drive(payload: Any) -> Dict[str, Any]:
+def sync_submission_to_google_drive(
+    payload: Any,
+    *,
+    submission_id: Optional[str] = None,
+) -> Dict[str, Any]:
     if not settings.GOOGLE_DRIVE_ENABLED:
         return {"ok": True, "status": "skipped", "reason": "disabled"}
 
     try:
         service = _build_drive_service()
         parent_folder_id, routing = _resolve_parent_folder(service, payload)
-        release_folder = _ensure_folder(
+        release_folder = ensure_project_folder(
             service,
-            parent_id=parent_folder_id,
-            name=_build_release_folder_name(payload),
+            {
+                "id": submission_id,
+                "google_drive_folder_id": _load_submission_google_drive_folder_id(
+                    submission_id
+                ),
+                "parent_folder_id": parent_folder_id,
+                "payload": payload,
+            },
         )
         logger.info(
             "Google Drive release folder ready: folder_id=%s parent_folder_id=%s name=%s",

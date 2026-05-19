@@ -397,6 +397,7 @@ def send_first_stage_completion_email(
     draft_token: str,
     current_step: Optional[str],
     workspace_slug: str = "atabaque",
+    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     recipients = _normalize_recipients(to_emails)
     if not recipients:
@@ -441,6 +442,7 @@ def send_first_stage_completion_email(
         to_email=recipients,
         subject=subject,
         html=html,
+        idempotency_key=idempotency_key,
     ) | {"draft_url": draft_url}
 
 
