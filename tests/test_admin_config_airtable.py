@@ -382,6 +382,162 @@ class AdminConfigAirtableTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 422)
 
+    def test_setup_ai_product_preview_projects_patch_without_persisting(self) -> None:
+        fake = _FakeSupabase(
+            [
+                {
+                    "workspace_slug": "atabaque",
+                    "workflow_type": "company_registry",
+                    "airtable_sync_enabled": True,
+                    "extra_settings": {
+                        "email": {
+                            "events": {
+                                "on_submit": {
+                                    "enabled": True,
+                                    "recipients": ["ops@example.com"],
+                                }
+                            }
+                        },
+                        "airtable": {
+                            "field_map": {
+                                "existing": "Existing Field",
+                            }
+                        },
+                    },
+                }
+            ]
+        )
+        body = admin_config.SetupAIAirtableConfigAction.model_validate(
+            {
+                "operation": "preview_patch",
+                "workspace_slug": "atabaque",
+                "workflow_type": "company_registry",
+                "airtable": {
+                    "table_override": "[V2] - Empresas Sandbox",
+                    "field_map": {
+                        "new": "New Field",
+                    },
+                    "merge_keys": [
+                        {
+                            "source": "company.document",
+                            "airtable_field": "Documento",
+                            "priority": 1,
+                        }
+                    ],
+                },
+            }
+        )
+
+        with patch.object(admin_config, "supabase", fake):
+            response = asyncio.run(
+                admin_config.setup_ai_airtable_config_action(body, None)
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["operation"], "preview_patch")
+        self.assertTrue(response["dry_run"])
+        self.assertTrue(response["requires_confirmation"])
+        self.assertEqual(fake.upserts, [])
+        self.assertEqual(
+            response["applied_patch"]["airtable"]["company_registry_table_override"],
+            "[V2] - Empresas Sandbox",
+        )
+        self.assertNotIn("table_override", response["applied_patch"]["airtable"])
+        self.assertEqual(
+            response["raw"]["field_map"],
+            {
+                "existing": "Existing Field",
+                "new": "New Field",
+            },
+        )
+        self.assertEqual(
+            response["raw"]["company_registry_table_override"],
+            "[V2] - Empresas Sandbox",
+        )
+        self.assertEqual(
+            response["current"]["raw"],
+            {
+                "field_map": {
+                    "existing": "Existing Field",
+                }
+            },
+        )
+        self.assertEqual(len(response["warnings"]), 2)
+        self.assertTrue(any("merge_keys" in item for item in response["warnings"]))
+        self.assertTrue(any("field_map" in item for item in response["warnings"]))
+
+    def test_setup_ai_product_apply_requires_explicit_confirmation(self) -> None:
+        with self.assertRaises(ValidationError):
+            admin_config.SetupAIAirtableConfigAction.model_validate(
+                {
+                    "operation": "apply_patch",
+                    "workspace_slug": "atabaque",
+                    "workflow_type": "company_registry",
+                    "airtable": {
+                        "table_override": "[V2] - Empresas Sandbox",
+                    },
+                }
+            )
+
+    def test_setup_ai_product_apply_persists_after_confirmation(self) -> None:
+        fake = _FakeSupabase(
+            [
+                {
+                    "workspace_slug": "atabaque",
+                    "workflow_type": "people_registry",
+                    "airtable_sync_enabled": True,
+                    "extra_settings": {
+                        "email": {
+                            "events": {
+                                "on_submit": {
+                                    "enabled": True,
+                                    "recipients": ["ops@example.com"],
+                                }
+                            }
+                        },
+                        "airtable": {},
+                    },
+                }
+            ]
+        )
+        body = admin_config.SetupAIAirtableConfigAction.model_validate(
+            {
+                "operation": "apply_patch",
+                "confirm_apply": True,
+                "workspace_slug": "atabaque",
+                "workflow_type": "people_registry",
+                "airtable_sync_enabled": False,
+                "airtable": {
+                    "table_override": "[V2] - Pessoas Sandbox",
+                },
+            }
+        )
+
+        with patch.object(admin_config, "supabase", fake):
+            response = asyncio.run(
+                admin_config.setup_ai_airtable_config_action(body, None)
+            )
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(response["operation"], "apply_patch")
+        self.assertFalse(response["dry_run"])
+        self.assertTrue(response["confirmed"])
+        self.assertEqual(
+            response["current_before"]["airtable_sync_enabled"]["value"],
+            True,
+        )
+        self.assertEqual(response["airtable_sync_enabled"]["value"], False)
+        self.assertEqual(
+            response["raw"]["people_registry_table_override"],
+            "[V2] - Pessoas Sandbox",
+        )
+        upsert = fake.upserts[0]["payload"]
+        self.assertIs(upsert["airtable_sync_enabled"], False)
+        self.assertEqual(
+            upsert["extra_settings"]["email"]["events"]["on_submit"]["recipients"],
+            ["ops@example.com"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

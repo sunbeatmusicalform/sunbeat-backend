@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import copy
 import logging
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Header
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -174,9 +174,10 @@ class AirtablePatch(BaseModel):
 class SetupAIAirtableConfigAction(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    operation: Literal["read", "patch"]
+    operation: Literal["read", "patch", "preview_patch", "apply_patch"]
     workspace_slug: str = Field(..., min_length=1)
     workflow_type: str = Field(..., min_length=1)
+    confirm_apply: Optional[bool] = None
     airtable_sync_enabled: Optional[bool] = None
     airtable: Optional[AirtableExtraPatch] = None
 
@@ -198,10 +199,19 @@ class SetupAIAirtableConfigAction(BaseModel):
         if self.operation == "read" and (has_flag or has_airtable_field):
             raise ValueError("read operation does not accept patch fields")
 
-        if self.operation == "patch" and not (has_flag or has_airtable_patch):
+        if self.operation in {"patch", "preview_patch", "apply_patch"} and not (
+            has_flag or has_airtable_patch
+        ):
             raise ValueError(
-                "patch operation requires airtable_sync_enabled or airtable fields"
+                f"{self.operation} operation requires airtable_sync_enabled "
+                "or airtable fields"
             )
+
+        if self.operation == "apply_patch" and self.confirm_apply is not True:
+            raise ValueError("apply_patch operation requires confirm_apply=true")
+
+        if self.operation != "apply_patch" and "confirm_apply" in self.model_fields_set:
+            raise ValueError("confirm_apply is only accepted for apply_patch")
 
         return self
 
@@ -507,7 +517,7 @@ def _setup_ai_applied_patch(
 def _setup_ai_airtable_response(
     workspace_slug: str,
     workflow_type: str,
-    operation: Literal["read", "patch"],
+    operation: Literal["read", "patch", "preview_patch", "apply_patch"],
     row: Optional[Dict[str, Any]],
     applied_patch: Optional[Dict[str, Any]] = None,
     warnings: Optional[List[str]] = None,
@@ -530,6 +540,57 @@ def _setup_ai_airtable_response(
         "applied_patch": applied_patch or {},
         "warnings": warnings or [],
     }
+
+
+def _setup_ai_patch_body_from_action(
+    body: SetupAIAirtableConfigAction,
+) -> AirtablePatch:
+    patch_payload: Dict[str, Any] = {}
+    if "airtable_sync_enabled" in body.model_fields_set:
+        patch_payload["airtable_sync_enabled"] = body.airtable_sync_enabled
+    if body.airtable is not None:
+        patch_payload["airtable"] = body.airtable.model_dump(
+            exclude_unset=True,
+            mode="json",
+        )
+    return AirtablePatch.model_validate(patch_payload)
+
+
+def _preview_airtable_patch(
+    workspace_slug: str,
+    workflow_type: str,
+    body: AirtablePatch,
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any], List[str], List[str]]:
+    """
+    Projeta o resultado de um patch sem persistir.
+
+    Usado pela primeira superficie controlada da Setup AI para permitir revisao
+    humana antes de gravar em `workspace_workflow_settings`.
+    """
+    row = _read_raw_row(workspace_slug, workflow_type)
+    preview_row = copy.deepcopy(row) if row is not None else {}
+    updated: List[str] = []
+    airtable_updated: List[str] = []
+
+    if "airtable_sync_enabled" in body.model_fields_set:
+        preview_row["airtable_sync_enabled"] = body.airtable_sync_enabled
+        updated.append("airtable_sync_enabled")
+
+    if body.airtable is not None and body.airtable.model_fields_set:
+        current_extra: Dict[str, Any] = (
+            row.get("extra_settings") or {}
+        ) if row else {}
+        if not isinstance(current_extra, dict):
+            current_extra = {}
+        merged, airtable_updated = _deep_merge_airtable(
+            current_extra,
+            workflow_type,
+            body.airtable,
+        )
+        preview_row["extra_settings"] = merged
+        updated.append("extra_settings.airtable")
+
+    return row, preview_row, updated, airtable_updated
 
 
 def _env_snapshot() -> Dict[str, Any]:
@@ -727,11 +788,12 @@ async def setup_ai_airtable_config_action(
     _: None = Depends(_require_admin_token),
 ) -> Dict[str, Any]:
     """
-    Consumidor interno minimo para futura Setup AI.
+    Superficie minima e estruturada para futura Setup AI.
 
-    Aceita apenas operacoes estruturadas de leitura ou patch parcial do contrato
-    Airtable ja existente. Nao interpreta linguagem natural, nao orquestra sync
-    e nao altera runtime de `merge_keys` ou `field_map`.
+    Aceita apenas operacoes estruturadas. `preview_patch` permite revisar o
+    resultado consolidado antes de `apply_patch`, que exige confirmacao
+    explicita. Nao interpreta linguagem natural, nao orquestra sync e nao altera
+    runtime de `merge_keys` ou `field_map`.
     """
     _validate_setup_ai_airtable_workflow(body.workflow_type)
 
@@ -744,18 +806,72 @@ async def setup_ai_airtable_config_action(
             row,
         )
 
-    patch_payload: Dict[str, Any] = {}
-    if "airtable_sync_enabled" in body.model_fields_set:
-        patch_payload["airtable_sync_enabled"] = body.airtable_sync_enabled
-    if body.airtable is not None:
-        patch_payload["airtable"] = body.airtable.model_dump(
-            exclude_unset=True,
-            mode="json",
-        )
-
-    patch_body = AirtablePatch.model_validate(patch_payload)
+    patch_body = _setup_ai_patch_body_from_action(body)
     applied_patch = _setup_ai_applied_patch(body.workflow_type, patch_body)
     warnings = _setup_ai_airtable_warnings(patch_body)
+
+    if body.operation == "preview_patch":
+        current_row, preview_row, updated, airtable_updated = _preview_airtable_patch(
+            body.workspace_slug,
+            body.workflow_type,
+            patch_body,
+        )
+        response = _setup_ai_airtable_response(
+            body.workspace_slug,
+            body.workflow_type,
+            "preview_patch",
+            preview_row,
+            applied_patch=applied_patch,
+            warnings=warnings,
+        )
+        response.update(
+            {
+                "dry_run": True,
+                "requires_confirmation": True,
+                "updated": updated,
+                "airtable_updated": airtable_updated,
+                "current": _setup_ai_airtable_response(
+                    body.workspace_slug,
+                    body.workflow_type,
+                    "read",
+                    current_row,
+                ),
+            }
+        )
+        return response
+
+    if body.operation == "apply_patch":
+        current_row = _read_raw_row(body.workspace_slug, body.workflow_type)
+        apply_result = _apply_airtable_patch(
+            body.workspace_slug,
+            body.workflow_type,
+            patch_body,
+        )
+        row = _read_raw_row(body.workspace_slug, body.workflow_type)
+        response = _setup_ai_airtable_response(
+            body.workspace_slug,
+            body.workflow_type,
+            "apply_patch",
+            row,
+            applied_patch=applied_patch,
+            warnings=warnings,
+        )
+        response.update(
+            {
+                "dry_run": False,
+                "confirmed": True,
+                "updated": apply_result["updated"],
+                "airtable_updated": apply_result["airtable_updated"],
+                "current_before": _setup_ai_airtable_response(
+                    body.workspace_slug,
+                    body.workflow_type,
+                    "read",
+                    current_row,
+                ),
+            }
+        )
+        return response
+
     _apply_airtable_patch(body.workspace_slug, body.workflow_type, patch_body)
 
     row = _read_raw_row(body.workspace_slug, body.workflow_type)

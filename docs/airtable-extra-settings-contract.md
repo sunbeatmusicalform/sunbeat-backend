@@ -66,12 +66,22 @@ especifica do workflow (`company_registry_table_override` ou
 `people_registry_table_override`) para preservar compatibilidade com os services
 atuais.
 
-### Consumidor interno minimo da futura Setup AI
+### Primeira superficie minima da Setup AI
 
 O endpoint `POST /internal/config/setup-ai/airtable` e uma action estruturada
 para leitura/escrita assistida. Ele nao aceita linguagem natural, nao executa
 sync, nao altera endpoints publicos e nao cria uma camada paralela de
 configuracao.
+
+A primeira superficie minima de produto deve usar tres operacoes controladas:
+
+- `read`: le o estado atual.
+- `preview_patch`: projeta o resultado consolidado sem persistir.
+- `apply_patch`: persiste apenas depois de `confirm_apply: true`.
+
+O modo legado `patch` permanece disponivel para compatibilidade interna, mas a
+experiencia assistida deve preferir `preview_patch` seguido de `apply_patch`
+para manter revisao humana antes da escrita.
 
 Leitura:
 
@@ -83,11 +93,11 @@ Leitura:
 }
 ```
 
-Patch parcial:
+Preview de patch parcial:
 
 ```json
 {
-  "operation": "patch",
+  "operation": "preview_patch",
   "workspace_slug": "atabaque",
   "workflow_type": "people_registry",
   "airtable_sync_enabled": true,
@@ -100,6 +110,21 @@ Patch parcial:
         "priority": 1
       }
     ]
+  }
+}
+```
+
+Aplicacao confirmada do mesmo patch:
+
+```json
+{
+  "operation": "apply_patch",
+  "confirm_apply": true,
+  "workspace_slug": "atabaque",
+  "workflow_type": "people_registry",
+  "airtable_sync_enabled": true,
+  "airtable": {
+    "table_override": "[V2] - Pessoas"
   }
 }
 ```
@@ -119,6 +144,16 @@ A resposta e estavel para consumo assistido e inclui:
 - `contract`
 - `applied_patch`
 - `warnings`
+
+Nas operacoes de produto, a resposta tambem pode incluir:
+
+- `dry_run`
+- `requires_confirmation`
+- `confirmed`
+- `current`
+- `current_before`
+- `updated`
+- `airtable_updated`
 
 Nesta etapa, `merge_keys` e `field_map` continuam metadata. Quando enviados
 pelo consumidor interno, a resposta inclui `warnings` deixando explicito que os
