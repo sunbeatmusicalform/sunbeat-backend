@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from pydantic import ValidationError
 
 from app.core.config import settings
 from app.core.database import supabase
@@ -2511,7 +2512,10 @@ def create_submission(
     background_tasks: BackgroundTasks,
     idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> Dict[str, Any]:
-    validated_payload = validate_submission_payload(payload)
+    try:
+        validated_payload = validate_submission_payload(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
     # -- clearance edit-resubmit early return --
     if isinstance(validated_payload, RightsClearanceSubmissionPayload):
