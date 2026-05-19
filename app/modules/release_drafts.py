@@ -120,6 +120,16 @@ def _maybe_send_first_stage_completion_email(
     draft: Dict[str, Any],
 ) -> Dict[str, Any]:
     workspace_slug = draft.get("client_slug") or DEFAULT_WORKSPACE_SLUG
+    latest_draft = _load_draft_row(str(draft.get("draft_token") or ""))
+    if latest_draft and isinstance(latest_draft.get("meta"), dict):
+        latest_meta = _ensure_identity_meta(
+            latest_draft.get("meta") or {},
+            workspace_slug=latest_draft.get("client_slug") or workspace_slug,
+            workflow_type=(latest_draft.get("meta") or {}).get("workflow_type"),
+        )
+        if latest_meta.get("first_stage_completion_email_sent"):
+            return latest_meta
+
     meta = _ensure_identity_meta(
         draft.get("meta") or {},
         workspace_slug=workspace_slug,
@@ -164,12 +174,9 @@ def _maybe_send_first_stage_completion_email(
             draft_token=draft["draft_token"],
             current_step=draft.get("current_step"),
             workspace_slug=workspace_slug,
+            idempotency_key=f"{draft['draft_token']}:first_stage",
         )
         provider_message_id = email_result.get("provider_message_id")
-        if not provider_message_id:
-            raise RuntimeError(
-                "Email provider accepted the request but did not return a message id"
-            )
     except Exception:
         logger.exception(
             "first_stage_completion_email failed workspace_slug=%s draft_token=%s",
@@ -190,7 +197,7 @@ def _maybe_send_first_stage_completion_email(
     )
 
     try:
-        (
+        update_result = (
             supabase.table("release_intake_drafts")
             .update(
                 {
@@ -199,11 +206,30 @@ def _maybe_send_first_stage_completion_email(
                 }
             )
             .eq("draft_token", draft["draft_token"])
+            .eq("updated_at", draft.get("updated_at"))
             .execute()
         )
     except Exception:
         logger.exception(
             "first_stage_completion_email state update failed workspace_slug=%s draft_token=%s",
+            workspace_slug,
+            draft.get("draft_token"),
+        )
+        return meta
+
+    if not (getattr(update_result, "data", None) or []):
+        refreshed_draft = _load_draft_row(str(draft.get("draft_token") or ""))
+        if refreshed_draft and isinstance(refreshed_draft.get("meta"), dict):
+            refreshed_meta = _ensure_identity_meta(
+                refreshed_draft.get("meta") or {},
+                workspace_slug=refreshed_draft.get("client_slug") or workspace_slug,
+                workflow_type=(refreshed_draft.get("meta") or {}).get("workflow_type"),
+            )
+            if refreshed_meta.get("first_stage_completion_email_sent"):
+                return refreshed_meta
+
+        logger.warning(
+            "first_stage_completion_email sent but state update matched no rows workspace_slug=%s draft_token=%s",
             workspace_slug,
             draft.get("draft_token"),
         )
@@ -299,6 +325,9 @@ async def save_draft(payload: Dict[str, Any]) -> Dict[str, Any]:
         "first_stage_completion_email_sent_at": saved_meta.get(
             "first_stage_completion_email_sent_at"
         ),
+        "first_stage_completion_email_message_id": saved_meta.get(
+            "first_stage_completion_email_message_id"
+        ),
     }
 
 
@@ -332,6 +361,9 @@ async def get_draft(draft_token: str) -> Dict[str, Any]:
         ),
         "first_stage_completion_email_sent_at": meta.get(
             "first_stage_completion_email_sent_at"
+        ),
+        "first_stage_completion_email_message_id": meta.get(
+            "first_stage_completion_email_message_id"
         ),
         "data": {
             "workspace_slug": draft.get("client_slug"),
