@@ -64,6 +64,7 @@ def _post_resend(
     edit_url: Optional[str] = None,
     cc: Optional[List[str]] = None,
     bcc: Optional[List[str]] = None,
+    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     if not settings.RESEND_API_KEY:
         raise RuntimeError("RESEND_API_KEY is not configured")
@@ -80,6 +81,7 @@ def _post_resend(
         headers={
             "Authorization": f"Bearer {settings.RESEND_API_KEY}",
             "Content-Type": "application/json",
+            **({"Idempotency-Key": idempotency_key} if idempotency_key else {}),
         },
         json={
             "from": settings.RESEND_FROM_EMAIL,
@@ -455,6 +457,7 @@ def send_submission_summary_email(
     focus_track_name: Optional[str],
     track_titles: Iterable[str],
     edit_url: str,
+    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     recipients = _normalize_recipients(to_emails)
     if not recipients:
@@ -512,4 +515,5 @@ def send_submission_summary_email(
         to_email=recipients,
         subject=subject,
         html=html,
+        idempotency_key=idempotency_key,
     )
