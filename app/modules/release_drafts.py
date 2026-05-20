@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.core.database import supabase
 from app.modules.submissions import _load_workspace_email_settings
-from app.services.workspace_config import get_email_event_config
+from app.services.workspace_config import get_email_event_config, get_email_extra_config
 from app.modules.workflow_registry import (
     build_workflow_source,
     normalize_workflow_type,
@@ -25,6 +25,7 @@ router = APIRouter(prefix="/release-drafts", tags=["release_drafts"])
 logger = logging.getLogger("sunbeat.release_drafts")
 DEFAULT_WORKSPACE_SLUG = "atabaque"
 FIRST_STAGE_INITIAL_STEPS = {"intro", "identification"}
+FIRST_STAGE_EMAIL_EVENT = "on_first_stage"
 
 
 def _get_draft_contact(values: Dict[str, Any]) -> Dict[str, str]:
@@ -116,6 +117,36 @@ def _is_first_stage_complete(
     )
 
 
+def _is_email_event_explicitly_configured(
+    workspace_slug: str,
+    workflow_type: str,
+    event: str,
+) -> bool:
+    email_extra = get_email_extra_config(workspace_slug, workflow_type)
+    events = email_extra.get("events") or {}
+    return event in events
+
+
+def _with_first_stage_email_status(
+    meta: Dict[str, Any],
+    *,
+    status: str,
+    attempted: bool = False,
+    error: str | None = None,
+    recipients_count: int | None = None,
+) -> Dict[str, Any]:
+    next_meta = dict(meta)
+    next_meta["first_stage_completion_email_status"] = status
+    next_meta["first_stage_completion_email_attempted"] = attempted
+    if recipients_count is not None:
+        next_meta["first_stage_completion_email_recipients_count"] = recipients_count
+    if error:
+        next_meta["first_stage_completion_email_error"] = error
+    else:
+        next_meta.pop("first_stage_completion_email_error", None)
+    return next_meta
+
+
 def _maybe_send_first_stage_completion_email(
     draft: Dict[str, Any],
 ) -> Dict[str, Any]:
@@ -128,7 +159,11 @@ def _maybe_send_first_stage_completion_email(
             workflow_type=(latest_draft.get("meta") or {}).get("workflow_type"),
         )
         if latest_meta.get("first_stage_completion_email_sent"):
-            return latest_meta
+            return _with_first_stage_email_status(
+                latest_meta,
+                status="already_sent",
+                attempted=False,
+            )
 
     meta = _ensure_identity_meta(
         draft.get("meta") or {},
@@ -137,30 +172,59 @@ def _maybe_send_first_stage_completion_email(
     )
 
     if meta.get("first_stage_completion_email_sent"):
-        return meta
+        return _with_first_stage_email_status(
+            meta,
+            status="already_sent",
+            attempted=False,
+        )
 
     if not _is_first_stage_complete(draft=draft, meta=meta):
-        return meta
+        return _with_first_stage_email_status(
+            meta,
+            status="not_ready",
+            attempted=False,
+        )
 
     workspace_email_settings = _load_workspace_email_settings(workspace_slug)
     _workflow_type = (draft.get("meta") or {}).get("workflow_type") or "release_intake"
-    _ev_cfg = get_email_event_config(workspace_slug, _workflow_type, "on_first_stage")
+    _ev_cfg = get_email_event_config(workspace_slug, _workflow_type, FIRST_STAGE_EMAIL_EVENT)
+    _ev_configured = _is_email_event_explicitly_configured(
+        workspace_slug,
+        _workflow_type,
+        FIRST_STAGE_EMAIL_EVENT,
+    )
     # v2: per-event recipients; fallback v1: notification_emails legacy
     notification_emails = (
         _ev_cfg.get("recipients") or workspace_email_settings["notification_emails"]
     )
-    _ev_enabled = _ev_cfg.get("enabled", True)  # False = evento desabilitado por config
-    if (
-        not _ev_enabled
-        or not workspace_email_settings["submission_email_enabled"]
-        or not notification_emails
-    ):
+    # Evento ausente preserva o fallback legado, igual ao summary email.
+    # Apenas evento explicitamente configurado com enabled=false desabilita.
+    _ev_enabled = bool(_ev_cfg.get("enabled", True)) if _ev_configured else True
+    if not _ev_enabled or not workspace_email_settings["submission_email_enabled"]:
         logger.info(
-            "first_stage_completion_email skipped workspace_slug=%s draft_token=%s reason=no_recipients_or_disabled",
+            "first_stage_completion_email skipped workspace_slug=%s draft_token=%s reason=disabled",
             workspace_slug,
             draft.get("draft_token"),
         )
-        return meta
+        return _with_first_stage_email_status(
+            meta,
+            status="disabled",
+            attempted=False,
+            recipients_count=len(notification_emails),
+        )
+
+    if not notification_emails:
+        logger.info(
+            "first_stage_completion_email skipped workspace_slug=%s draft_token=%s reason=no_recipients",
+            workspace_slug,
+            draft.get("draft_token"),
+        )
+        return _with_first_stage_email_status(
+            meta,
+            status="skipped",
+            attempted=False,
+            recipients_count=0,
+        )
 
     contact = _get_draft_contact(draft.get("values") or {})
 
@@ -177,13 +241,19 @@ def _maybe_send_first_stage_completion_email(
             idempotency_key=f"{draft['draft_token']}:first_stage",
         )
         provider_message_id = email_result.get("provider_message_id")
-    except Exception:
+    except Exception as exc:
         logger.exception(
             "first_stage_completion_email failed workspace_slug=%s draft_token=%s",
             workspace_slug,
             draft.get("draft_token"),
         )
-        return meta
+        return _with_first_stage_email_status(
+            meta,
+            status="failed",
+            attempted=True,
+            error=str(exc),
+            recipients_count=len(notification_emails),
+        )
 
     sent_at = utc_now_iso()
     updated_meta = dict(meta)
@@ -193,6 +263,9 @@ def _maybe_send_first_stage_completion_email(
             "first_stage_completion_email_sent_at": sent_at,
             "first_stage_completion_email_message_id": provider_message_id,
             "first_stage_completion_email_step": draft.get("current_step"),
+            "first_stage_completion_email_status": email_result.get("status") or "sent",
+            "first_stage_completion_email_attempted": True,
+            "first_stage_completion_email_recipients_count": len(notification_emails),
         }
     )
 
@@ -215,7 +288,13 @@ def _maybe_send_first_stage_completion_email(
             workspace_slug,
             draft.get("draft_token"),
         )
-        return meta
+        return _with_first_stage_email_status(
+            meta,
+            status="failed",
+            attempted=True,
+            error="state_update_failed",
+            recipients_count=len(notification_emails),
+        )
 
     if not (getattr(update_result, "data", None) or []):
         refreshed_draft = _load_draft_row(str(draft.get("draft_token") or ""))
@@ -226,14 +305,23 @@ def _maybe_send_first_stage_completion_email(
                 workflow_type=(refreshed_draft.get("meta") or {}).get("workflow_type"),
             )
             if refreshed_meta.get("first_stage_completion_email_sent"):
-                return refreshed_meta
+                return _with_first_stage_email_status(
+                    refreshed_meta,
+                    status="already_sent",
+                    attempted=False,
+                )
 
         logger.warning(
             "first_stage_completion_email sent but state update matched no rows workspace_slug=%s draft_token=%s",
             workspace_slug,
             draft.get("draft_token"),
         )
-        return meta
+        return _with_first_stage_email_status(
+            meta,
+            status="state_update_unconfirmed",
+            attempted=True,
+            recipients_count=len(notification_emails),
+        )
 
     logger.info(
         "first_stage_completion_email sent workspace_slug=%s draft_token=%s recipients=%d step=%s message_id=%s",
@@ -322,11 +410,20 @@ async def save_draft(payload: Dict[str, Any]) -> Dict[str, Any]:
         "first_stage_completion_email_sent": bool(
             saved_meta.get("first_stage_completion_email_sent")
         ),
+        "first_stage_completion_email_attempted": bool(
+            saved_meta.get("first_stage_completion_email_attempted")
+        ),
+        "first_stage_completion_email_status": saved_meta.get(
+            "first_stage_completion_email_status"
+        ),
         "first_stage_completion_email_sent_at": saved_meta.get(
             "first_stage_completion_email_sent_at"
         ),
         "first_stage_completion_email_message_id": saved_meta.get(
             "first_stage_completion_email_message_id"
+        ),
+        "first_stage_completion_email_error": saved_meta.get(
+            "first_stage_completion_email_error"
         ),
     }
 
@@ -359,11 +456,20 @@ async def get_draft(draft_token: str) -> Dict[str, Any]:
         "first_stage_completion_email_sent": bool(
             meta.get("first_stage_completion_email_sent")
         ),
+        "first_stage_completion_email_attempted": bool(
+            meta.get("first_stage_completion_email_attempted")
+        ),
+        "first_stage_completion_email_status": meta.get(
+            "first_stage_completion_email_status"
+        ),
         "first_stage_completion_email_sent_at": meta.get(
             "first_stage_completion_email_sent_at"
         ),
         "first_stage_completion_email_message_id": meta.get(
             "first_stage_completion_email_message_id"
+        ),
+        "first_stage_completion_email_error": meta.get(
+            "first_stage_completion_email_error"
         ),
         "data": {
             "workspace_slug": draft.get("client_slug"),

@@ -161,6 +161,16 @@ class ReleaseDraftFirstStageEmailTests(unittest.TestCase):
             ) as email_mock,
             patch.object(
                 release_drafts,
+                "get_email_event_config",
+                return_value={"recipients": [], "enabled": False},
+            ),
+            patch.object(
+                release_drafts,
+                "get_email_extra_config",
+                return_value={},
+            ),
+            patch.object(
+                release_drafts,
                 "utc_now_iso",
                 return_value="2026-04-17T20:00:00+00:00",
             ),
@@ -182,6 +192,8 @@ class ReleaseDraftFirstStageEmailTests(unittest.TestCase):
             meta = release_drafts._maybe_send_first_stage_completion_email(draft)
 
         self.assertTrue(meta["first_stage_completion_email_sent"])
+        self.assertTrue(meta["first_stage_completion_email_attempted"])
+        self.assertEqual(meta["first_stage_completion_email_status"], "sent")
         self.assertEqual(
             meta["first_stage_completion_email_sent_at"],
             "2026-04-17T20:00:00+00:00",
@@ -226,6 +238,16 @@ class ReleaseDraftFirstStageEmailTests(unittest.TestCase):
             ),
             patch.object(
                 release_drafts,
+                "get_email_event_config",
+                return_value={"recipients": [], "enabled": False},
+            ),
+            patch.object(
+                release_drafts,
+                "get_email_extra_config",
+                return_value={},
+            ),
+            patch.object(
+                release_drafts,
                 "utc_now_iso",
                 return_value="2026-04-17T20:00:00+00:00",
             ),
@@ -247,6 +269,11 @@ class ReleaseDraftFirstStageEmailTests(unittest.TestCase):
             meta = release_drafts._maybe_send_first_stage_completion_email(draft)
 
         self.assertTrue(meta["first_stage_completion_email_sent"])
+        self.assertTrue(meta["first_stage_completion_email_attempted"])
+        self.assertEqual(
+            meta["first_stage_completion_email_status"],
+            "sent_without_message_id",
+        )
         self.assertIsNone(meta["first_stage_completion_email_message_id"])
         self.assertTrue(updates[0]["payload"]["meta"]["first_stage_completion_email_sent"])
         self.assertIsNone(
@@ -277,6 +304,8 @@ class ReleaseDraftFirstStageEmailTests(unittest.TestCase):
             meta = release_drafts._maybe_send_first_stage_completion_email(draft)
 
         self.assertTrue(meta["first_stage_completion_email_sent"])
+        self.assertFalse(meta["first_stage_completion_email_attempted"])
+        self.assertEqual(meta["first_stage_completion_email_status"], "already_sent")
         self.assertEqual(
             meta["first_stage_completion_email_sent_at"],
             "2026-04-17T19:00:00+00:00",
@@ -330,6 +359,8 @@ class ReleaseDraftFirstStageEmailTests(unittest.TestCase):
             meta = release_drafts._maybe_send_first_stage_completion_email(draft)
 
         self.assertTrue(meta["first_stage_completion_email_sent"])
+        self.assertFalse(meta["first_stage_completion_email_attempted"])
+        self.assertEqual(meta["first_stage_completion_email_status"], "already_sent")
         self.assertEqual(meta["first_stage_completion_email_message_id"], "msg-race")
         self.assertEqual(updates, [])
 
@@ -357,6 +388,16 @@ class ReleaseDraftFirstStageEmailTests(unittest.TestCase):
             ),
             patch.object(
                 release_drafts,
+                "get_email_event_config",
+                return_value={"recipients": [], "enabled": False},
+            ),
+            patch.object(
+                release_drafts,
+                "get_email_extra_config",
+                return_value={},
+            ),
+            patch.object(
+                release_drafts,
                 "supabase",
                 _FakeSupabase(
                     [
@@ -374,6 +415,43 @@ class ReleaseDraftFirstStageEmailTests(unittest.TestCase):
             meta = release_drafts._maybe_send_first_stage_completion_email(draft)
 
         self.assertNotIn("first_stage_completion_email_sent", meta)
+        self.assertTrue(meta["first_stage_completion_email_attempted"])
+        self.assertEqual(meta["first_stage_completion_email_status"], "failed")
+        self.assertEqual(updates, [])
+
+    def test_skips_when_first_stage_event_explicitly_disabled(self) -> None:
+        updates: list[dict] = []
+        draft = _draft()
+
+        with (
+            patch.object(
+                release_drafts,
+                "_load_workspace_email_settings",
+                return_value={
+                    "workspace_name": "Atabaque",
+                    "submission_email_enabled": True,
+                    "notification_emails": ["labels@atabaque.biz"],
+                },
+            ),
+            patch.object(
+                release_drafts,
+                "get_email_event_config",
+                return_value={"recipients": [], "enabled": False},
+            ),
+            patch.object(
+                release_drafts,
+                "get_email_extra_config",
+                return_value={"events": {"on_first_stage": {"enabled": False}}},
+            ),
+            patch.object(release_drafts, "send_first_stage_completion_email") as email_mock,
+            patch.object(release_drafts, "supabase", _FakeSupabase([None], updates)),
+        ):
+            meta = release_drafts._maybe_send_first_stage_completion_email(draft)
+
+        self.assertFalse(meta.get("first_stage_completion_email_sent", False))
+        self.assertFalse(meta["first_stage_completion_email_attempted"])
+        self.assertEqual(meta["first_stage_completion_email_status"], "disabled")
+        email_mock.assert_not_called()
         self.assertEqual(updates, [])
 
 
