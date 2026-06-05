@@ -10,6 +10,7 @@ PeopleRegistryAirtableSyncStatus = Literal["pending", "blocked", "failed", "sync
 PeopleRegistryResponseStatus = Literal[
     "validated", "invalid", "created", "fetched", "conflict", "error"
 ]
+PeopleRegistryLookupConfidence = Literal["exact", "partial"]
 
 
 class PeopleRegistryPartyPayload(BaseModel):
@@ -147,3 +148,20 @@ class PeopleRegistryResponsePayload(BaseModel):
     data: Optional[PeopleRegistryPreparedPayload] = None
     record: Optional[PeopleRegistryRecordPayload] = None
     error: Optional[PeopleRegistryErrorDetailPayload] = None
+
+
+class PeopleRegistryLookupItemPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    displayName: str
+    roles: List[str] = Field(default_factory=list)
+    source: Literal["people_registry"] = "people_registry"
+    confidence: PeopleRegistryLookupConfidence
+
+
+class PeopleRegistryLookupResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ok: bool = True
+    items: List[PeopleRegistryLookupItemPayload] = Field(default_factory=list)

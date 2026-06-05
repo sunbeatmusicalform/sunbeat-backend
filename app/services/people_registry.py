@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
@@ -9,6 +10,8 @@ from app.core.database import supabase
 
 from app.schemas.people_registry import (
     PeopleRegistryErrorDetailPayload,
+    PeopleRegistryLookupItemPayload,
+    PeopleRegistryLookupResponsePayload,
     PeopleRegistryPayload,
     PeopleRegistryPreparedPayload,
     PeopleRegistryRecordPayload,
@@ -24,6 +27,9 @@ SLUG_TEXT_PATTERN = re.compile(r"[^a-z0-9_-]+")
 DOCUMENT_PATTERN = re.compile(r"[^A-Za-z0-9]+")
 PHONE_PATTERN = re.compile(r"[^\d+]+")
 PEOPLE_REGISTRY_TABLE = "people_registry_records"
+PEOPLE_LOOKUP_MIN_QUERY_LENGTH = 2
+PEOPLE_LOOKUP_MAX_LIMIT = 10
+PEOPLE_LOOKUP_CANDIDATE_LIMIT = 50
 
 
 def _normalized_text(value: Any) -> Optional[str]:
@@ -68,6 +74,11 @@ def _normalized_email(value: Any) -> Optional[str]:
     return text.lower() if text else None
 
 
+def _normalized_lookup_text(value: Any) -> str:
+    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    return text.replace("%", "").replace("_", "").replace("\\", "")
+
+
 def _normalized_roles(values: Iterable[Any]) -> List[str]:
     normalized: List[str] = []
     seen: set[str] = set()
@@ -80,6 +91,46 @@ def _normalized_roles(values: Iterable[Any]) -> List[str]:
         normalized.append(role)
 
     return normalized
+
+
+def _normalized_lookup_roles(value: Any) -> List[str]:
+    if value is None:
+        return []
+
+    if isinstance(value, str):
+        values = value.split(",")
+    else:
+        values = value
+
+    return _normalized_roles(values)
+
+
+def _bounded_lookup_limit(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = PEOPLE_LOOKUP_MAX_LIMIT
+
+    if parsed < 1:
+        return 1
+
+    return min(parsed, PEOPLE_LOOKUP_MAX_LIMIT)
+
+
+def _build_people_lookup_id(row: Dict[str, Any]) -> str:
+    raw = "|".join(
+        [
+            str(row.get("workspace_slug") or ""),
+            str(row.get("id") or ""),
+            str(row.get("display_name") or ""),
+        ]
+    )
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+    return f"people_lookup_{digest}"
+
+
+def _lookup_confidence(display_name: str, query: str) -> str:
+    return "exact" if _normalized_lookup_text(display_name) == query else "partial"
 
 
 def _issue(field: str, message: str) -> PeopleRegistryValidationIssuePayload:
@@ -390,6 +441,66 @@ def find_people_registry_duplicate_record(
             return row, "contact.email_primary"
 
     return None
+
+
+def lookup_people_registry_records(
+    workspace_slug: str,
+    query: str,
+    roles: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> PeopleRegistryLookupResponsePayload:
+    normalized_workspace = _normalized_slug(workspace_slug) or ""
+    normalized_query = _normalized_lookup_text(query)
+    requested_roles = _normalized_lookup_roles(roles)
+    bounded_limit = _bounded_lookup_limit(limit)
+
+    if (
+        not normalized_workspace
+        or len(normalized_query) < PEOPLE_LOOKUP_MIN_QUERY_LENGTH
+    ):
+        return PeopleRegistryLookupResponsePayload(ok=True, items=[])
+
+    result = (
+        supabase.table(PEOPLE_REGISTRY_TABLE)
+        .select("id, workspace_slug, display_name, roles_json")
+        .eq("workspace_slug", normalized_workspace)
+        .ilike("display_name", f"%{normalized_query}%")
+        .order("display_name", desc=False)
+        .limit(PEOPLE_LOOKUP_CANDIDATE_LIMIT)
+        .execute()
+    )
+
+    rows = getattr(result, "data", None)
+    if not isinstance(rows, list):
+        return PeopleRegistryLookupResponsePayload(ok=True, items=[])
+
+    items: List[PeopleRegistryLookupItemPayload] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        display_name = str(row.get("display_name") or "").strip()
+        if not display_name:
+            continue
+
+        row_roles = _normalized_lookup_roles(row.get("roles_json") or [])
+        if requested_roles and not set(requested_roles).intersection(row_roles):
+            continue
+
+        items.append(
+            PeopleRegistryLookupItemPayload(
+                id=_build_people_lookup_id(row),
+                displayName=display_name,
+                roles=row_roles,
+                source="people_registry",
+                confidence=_lookup_confidence(display_name, normalized_query),
+            )
+        )
+
+        if len(items) >= bounded_limit:
+            break
+
+    return PeopleRegistryLookupResponsePayload(ok=True, items=items)
 
 
 def fetch_people_registry_record_by_id(record_id: str) -> Optional[Dict[str, Any]]:
