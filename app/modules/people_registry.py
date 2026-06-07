@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from app.schemas.people_registry import (
+    PeopleRegistryLookupResponsePayload,
     PeopleRegistryPayload,
     PeopleRegistryResponsePayload,
 )
@@ -12,6 +13,7 @@ from app.services.people_registry import (
     create_people_registry_record_response,
     get_people_registry_record_response,
     get_people_registry_record_by_edit_token_response,
+    lookup_people_registry_records,
     update_people_registry_record_response,
 )
 
@@ -43,6 +45,21 @@ def create_people_registry_record(
     return JSONResponse(
         status_code=status_code,
         content=response.model_dump(mode="json"),
+    )
+
+
+@router.get("/lookup", response_model=PeopleRegistryLookupResponsePayload)
+def lookup_people_registry(
+    workspace_slug: str = Query(..., min_length=1),
+    query: str = Query("", min_length=0),
+    roles: str | None = Query(default=None),
+    limit: int | None = Query(default=None),
+):
+    return lookup_people_registry_records(
+        workspace_slug=workspace_slug,
+        query=query,
+        roles=roles,
+        limit=limit,
     )
 
 
