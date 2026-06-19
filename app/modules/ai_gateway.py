@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import time
+from hmac import compare_digest
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
@@ -778,13 +779,37 @@ class _SetupCopilotResponse(BaseModel):
     budget_alert: Optional[Dict[str, Any]] = None
 
 
+def _configured_copilot_secrets() -> list[str]:
+    candidates = [
+        getattr(settings, "AI_COPILOT_SECRET", None),
+        getattr(settings, "INTERNAL_ADMIN_TOKEN", None),
+    ]
+    return [
+        value.strip()
+        for value in candidates
+        if isinstance(value, str) and value.strip()
+    ]
+
+
+def _copilot_secret_is_valid(incoming_secret: Optional[str]) -> bool:
+    expected_secrets = _configured_copilot_secrets()
+    if not expected_secrets:
+        return True
+
+    incoming = incoming_secret.strip() if isinstance(incoming_secret, str) else ""
+    if not incoming:
+        return False
+
+    return any(compare_digest(incoming, expected) for expected in expected_secrets)
+
+
 @router.post("/copilot", response_model=_SetupCopilotResponse)
 async def copilot(payload: _SetupCopilotRequest) -> _SetupCopilotResponse:
     """
     Internal Setup Copilot endpoint.
     - Not subject to surface phase restrictions or workspace protection.
     - Requires AI_GATEWAY_ENABLED=true and a configured AI provider.
-    - Protected by AI_COPILOT_SECRET (if set).
+    - Protected by AI_COPILOT_SECRET or INTERNAL_ADMIN_TOKEN (if set).
     """
     if not ai_gateway_enabled():
         raise HTTPException(
@@ -796,12 +821,11 @@ async def copilot(payload: _SetupCopilotRequest) -> _SetupCopilotResponse:
             ),
         )
 
-    # AI_COPILOT_SECRET gate: protect endpoint if secret is configured on both sides.
-    # V1: secret check is permissive — endpoint is already protected by the
-    # frontend Supabase auth layer (401 without active session).
-    expected_secret = getattr(settings, "AI_COPILOT_SECRET", None)
-    incoming_secret = payload.secret
-    if expected_secret and incoming_secret and incoming_secret != expected_secret:
+    # Setup Copilot is called by the authenticated frontend API route, but the
+    # backend endpoint itself is public. Require a server-side shared secret when
+    # one is configured, and allow either the dedicated copilot secret or the
+    # existing internal admin token used by setup/config routes.
+    if not _copilot_secret_is_valid(payload.secret):
         raise HTTPException(
             status_code=403,
             detail=_error_detail(
