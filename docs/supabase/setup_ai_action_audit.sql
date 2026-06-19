@@ -17,6 +17,11 @@ create table if not exists public.setup_ai_action_audit (
   completed_at timestamptz
 );
 
+alter table public.setup_ai_action_audit enable row level security;
+
+revoke all on table public.setup_ai_action_audit from anon;
+revoke all on table public.setup_ai_action_audit from authenticated;
+
 create index if not exists setup_ai_action_audit_workspace_created_idx
   on public.setup_ai_action_audit (workspace_slug, created_at desc);
 
