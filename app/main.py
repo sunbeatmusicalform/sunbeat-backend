@@ -13,6 +13,7 @@ from app.modules.people_registry import router as people_registry_router
 from app.modules.release_intake_history import router as release_intake_history_router
 from app.modules.release_drafts import router as drafts_router
 from app.modules.submissions import router as submissions_router
+from app.modules.tables import router as tables_router
 from app.modules.workspaces import router as workspaces_router
 
 logging.basicConfig(
@@ -46,6 +47,7 @@ app.include_router(drafts_router)
 app.include_router(people_registry_router)
 app.include_router(release_intake_history_router)
 app.include_router(submissions_router)
+app.include_router(tables_router)
 app.include_router(workspaces_router)
 app.include_router(ai_gateway_router)
 
