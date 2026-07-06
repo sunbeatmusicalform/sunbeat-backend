@@ -79,7 +79,10 @@ class TablesGanttTests(unittest.TestCase):
         self.assertEqual(response["items"][0]["responsible"], "Henrique")
 
     def test_gantt_route_requires_admin_token(self) -> None:
-        with patch.object(settings, "INTERNAL_ADMIN_TOKEN", "secret"):
+        with (
+            patch.object(settings, "INTERNAL_ADMIN_TOKEN", "secret"),
+            patch.object(settings, "AI_COPILOT_SECRET", None),
+        ):
             response = _client().get("/tables/atabaque/gantt")
 
         self.assertEqual(response.status_code, 401)
@@ -87,6 +90,7 @@ class TablesGanttTests(unittest.TestCase):
     def test_gantt_route_accepts_admin_token(self) -> None:
         with (
             patch.object(settings, "INTERNAL_ADMIN_TOKEN", "secret"),
+            patch.object(settings, "AI_COPILOT_SECRET", None),
             patch(
                 "app.modules.tables.build_gantt_response",
                 return_value={
@@ -103,6 +107,31 @@ class TablesGanttTests(unittest.TestCase):
             response = _client().get(
                 "/tables/atabaque/gantt",
                 headers={"X-Admin-Token": "secret"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+
+    def test_gantt_route_accepts_copilot_secret(self) -> None:
+        with (
+            patch.object(settings, "INTERNAL_ADMIN_TOKEN", None),
+            patch.object(settings, "AI_COPILOT_SECRET", "copilot-secret"),
+            patch(
+                "app.modules.tables.build_gantt_response",
+                return_value={
+                    "ok": True,
+                    "workspace_slug": "atabaque",
+                    "source": "stages",
+                    "items": [],
+                    "summary": {"total": 0},
+                    "filters": {},
+                    "warnings": [],
+                },
+            ),
+        ):
+            response = _client().get(
+                "/tables/atabaque/gantt",
+                headers={"X-Admin-Token": "copilot-secret"},
             )
 
         self.assertEqual(response.status_code, 200)
