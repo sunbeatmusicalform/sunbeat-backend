@@ -137,6 +137,45 @@ class TablesGanttTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertTrue(response.json()["ok"])
 
+    def test_gantt_route_accepts_supabase_bearer_token(self) -> None:
+        with (
+            patch.object(settings, "INTERNAL_ADMIN_TOKEN", None),
+            patch.object(settings, "AI_COPILOT_SECRET", None),
+            patch("app.core.admin_auth._supabase_user_token_is_valid", return_value=True),
+            patch(
+                "app.modules.tables.build_gantt_response",
+                return_value={
+                    "ok": True,
+                    "workspace_slug": "atabaque",
+                    "source": "stages",
+                    "items": [],
+                    "summary": {"total": 0},
+                    "filters": {},
+                    "warnings": [],
+                },
+            ),
+        ):
+            response = _client().get(
+                "/tables/atabaque/gantt",
+                headers={"Authorization": "Bearer user-session-token"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["ok"])
+
+    def test_gantt_route_rejects_invalid_supabase_bearer_token(self) -> None:
+        with (
+            patch.object(settings, "INTERNAL_ADMIN_TOKEN", None),
+            patch.object(settings, "AI_COPILOT_SECRET", None),
+            patch("app.core.admin_auth._supabase_user_token_is_valid", return_value=False),
+        ):
+            response = _client().get(
+                "/tables/atabaque/gantt",
+                headers={"Authorization": "Bearer invalid-token"},
+            )
+
+        self.assertEqual(response.status_code, 401)
+
 
 if __name__ == "__main__":
     unittest.main()
