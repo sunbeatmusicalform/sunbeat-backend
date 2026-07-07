@@ -23,6 +23,16 @@ jobs:
           SUPABASE_URL: https://example.supabase.co
           SUPABASE_SERVICE_ROLE_KEY: ci-import-check
       - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Sync Airtable API token
+        run: |
+          if [ -n "$AIRTABLE_API_KEY" ]; then
+            flyctl secrets set AIRTABLE_API_KEY="$AIRTABLE_API_KEY" --app sunbeat-backend
+          else
+            echo "AIRTABLE_API_KEY secret not configured; skipping."
+          fi
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+          AIRTABLE_API_KEY: ${{ secrets.AIRTABLE_API_KEY }}
       - run: flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
