@@ -78,6 +78,44 @@ class TablesGanttTests(unittest.TestCase):
         self.assertEqual(response["items"][0]["status"], "concluida")
         self.assertEqual(response["items"][0]["responsible"], "Henrique")
 
+    def test_stage_linked_project_id_resolves_to_project_name(self) -> None:
+        stage_record = {
+            "id": "recStage1",
+            "fields": {
+                "Etapa": "Operacional — Fullgás",
+                "Projeto Musical": ["recProject1"],
+                "Macroarea": "Operacional",
+                "Data Inicio": "2026-06-09",
+                "Data Fim": "2026-07-10",
+                "Status": "Nao iniciado",
+            },
+        }
+        project_record = {
+            "id": "recProject1",
+            "fields": {
+                "Nome do Projeto": "Fullgás",
+                "Data de Lançamento": "2026-07-24",
+            },
+        }
+
+        def list_records(*, table_name: str, **_kwargs):
+            if table_name == "[V2] Etapas do Lançamento":
+                return [stage_record]
+            return [project_record]
+
+        with (
+            patch.object(tables_gantt, "_list_airtable_records", side_effect=list_records),
+            patch.object(tables_gantt, "_base_id", return_value=None),
+        ):
+            response = tables_gantt.build_gantt_response(
+                workspace_slug="atabaque",
+                max_records=10,
+            )
+
+        self.assertEqual(response["source"], "stages")
+        self.assertEqual(response["items"][0]["project_id"], "recProject1")
+        self.assertEqual(response["items"][0]["project_name"], "Fullgás")
+
     def test_gantt_route_requires_admin_token(self) -> None:
         with (
             patch.object(settings, "INTERNAL_ADMIN_TOKEN", "secret"),

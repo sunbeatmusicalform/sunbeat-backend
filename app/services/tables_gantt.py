@@ -78,6 +78,13 @@ def _text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _list_values(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item or "").strip()]
+    text = str(value or "").strip()
+    return [text] if text else []
+
+
 def _parse_date(value: Any) -> Optional[date]:
     if not value:
         return None
@@ -188,6 +195,44 @@ def _list_airtable_records(
     return records
 
 
+def _project_lookup(records: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    lookup: Dict[str, Dict[str, Any]] = {}
+    for record in records:
+        record_id = str(record.get("id") or "").strip()
+        if not record_id:
+            continue
+        fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+        project_name = _text(_first_value(fields, PROJECT_NAME_FIELDS)) or record_id
+        lookup[record_id] = {
+            "name": project_name,
+            "release_date": _parse_date(_first_value(fields, PROJECT_RELEASE_DATE_FIELDS)),
+        }
+    return lookup
+
+
+def _stage_project_ref(
+    fields: Dict[str, Any],
+    project_lookup: Dict[str, Dict[str, Any]],
+) -> Dict[str, str]:
+    raw_value = _first_value(fields, STAGE_PROJECT_FIELDS)
+    values = _list_values(raw_value)
+    project_id = values[0] if values else ""
+    if not project_id:
+        return {
+            "id": "",
+            "name": "Sem projeto vinculado",
+        }
+    if project_id in project_lookup:
+        return {
+            "id": project_id,
+            "name": str(project_lookup[project_id].get("name") or project_id),
+        }
+    return {
+        "id": project_id,
+        "name": _text(raw_value),
+    }
+
+
 def _status_for_item(status: str, end_date: Optional[date], today: date) -> Dict[str, Any]:
     normalized = status.strip().lower()
     is_done = normalized in DONE_STATUS_VALUES
@@ -248,14 +293,19 @@ def _records_from_stages(
     *,
     workspace_slug: str,
     records: List[Dict[str, Any]],
+    project_lookup: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     macroareas = {item["name"]: item for item in _macroarea_config(workspace_slug)}
+    project_lookup = project_lookup or {}
     items: List[Dict[str, Any]] = []
     for record in records:
         fields = record.get("fields") if isinstance(record.get("fields"), dict) else {}
+        project_ref = _stage_project_ref(fields, project_lookup)
         macroarea = _text(_first_value(fields, STAGE_MACROAREA_FIELDS)) or "Operacional"
         cfg = macroareas.get(macroarea, {})
         release_date = _parse_date(_first_value(fields, STAGE_RELEASE_DATE_FIELDS))
+        if not release_date and project_ref["id"] in project_lookup:
+            release_date = project_lookup[project_ref["id"]].get("release_date")
         start_date = _parse_date(_first_value(fields, STAGE_START_FIELDS))
         end_date = _parse_date(_first_value(fields, STAGE_END_FIELDS))
 
@@ -271,8 +321,8 @@ def _records_from_stages(
         items.append(
             _item_payload(
                 record_id=str(record.get("id") or ""),
-                project_id=_text(_first_value(fields, STAGE_PROJECT_FIELDS)),
-                project_name=_text(_first_value(fields, STAGE_PROJECT_FIELDS)),
+                project_id=project_ref["id"],
+                project_name=project_ref["name"],
                 title=_text(_first_value(fields, STAGE_TITLE_FIELDS)) or macroarea,
                 macroarea=macroarea,
                 color=_text(cfg.get("color")) or "#111111",
@@ -366,7 +416,17 @@ def build_gantt_response(
             table_name=_stages_table_name(workspace_slug),
             max_records=max_records,
         )
-        items = _records_from_stages(workspace_slug=workspace_slug, records=stage_records)
+        try:
+            project_records = _list_airtable_records(
+                base_id=base_id,
+                table_name=_projects_table_for_gantt(workspace_slug),
+                max_records=max_records,
+            )
+            lookup = _project_lookup(project_records)
+        except Exception as exc:
+            warnings.append(f"Não foi possível resolver nomes de projetos; usando referência da etapa. Detalhe: {exc}")
+            lookup = {}
+        items = _records_from_stages(workspace_slug=workspace_slug, records=stage_records, project_lookup=lookup)
     except Exception as exc:
         warnings.append(f"Tabela de etapas indisponível; usando fallback de projetos. Detalhe: {exc}")
         source = "projects_fallback"
