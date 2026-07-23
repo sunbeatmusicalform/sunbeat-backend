@@ -201,6 +201,37 @@ def _get_folder_by_id(service: Any, folder_id: Optional[str]) -> Optional[Dict[s
     return {"id": folder["id"], "name": folder.get("name") or folder_id}
 
 
+def _resolve_accessible_artist_folder(
+    service: Any,
+    *,
+    artist_folder_id: Optional[str],
+    drive_link_folder_id: Optional[str],
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Resolve an artist folder without letting a stale cache hide a valid Drive link."""
+    candidates = [
+        ("folder_id_artista", artist_folder_id),
+        ("pasta_do_drive_fallback", drive_link_folder_id),
+    ]
+    attempted_ids: set[str] = set()
+
+    for source, folder_id in candidates:
+        if not folder_id or folder_id in attempted_ids:
+            continue
+        attempted_ids.add(folder_id)
+        folder = _get_folder_by_id(service, folder_id)
+        if folder:
+            if source == "pasta_do_drive_fallback" and artist_folder_id:
+                logger.warning(
+                    "Google Drive artist folder cache unavailable; using Pasta do Drive: "
+                    "cached_id=%s drive_link_id=%s",
+                    artist_folder_id,
+                    drive_link_folder_id,
+                )
+            return folder, source
+
+    return None, None
+
+
 def _find_child_folder(service: Any, *, parent_id: str, name: str) -> Optional[Dict[str, Any]]:
     safe_name = _sanitize_name(name)
     escaped_name = _escape_drive_query_literal(safe_name)
@@ -518,6 +549,15 @@ def _resolve_matching_client_record(payload: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _root_fallback_allowed(payload: Any) -> bool:
+    workspace_slug = _normalize_lookup_key(
+        str(getattr(payload, "workspace_slug", "") or "")
+    )
+    if workspace_slug == "atabaque":
+        return bool(settings.GOOGLE_DRIVE_ATABAQUE_ALLOW_ROOT_FALLBACK)
+    return True
+
+
 def _resolve_parent_folder(service: Any, payload: Any) -> Tuple[str, Dict[str, Any]]:
     root_folder_id = (settings.GOOGLE_DRIVE_ROOT_FOLDER_ID or "").strip()
     matching = _resolve_matching_client_record(payload)
@@ -536,7 +576,6 @@ def _resolve_parent_folder(service: Any, payload: Any) -> Tuple[str, Dict[str, A
             str(_get_field_value(fields, settings.AIRTABLE_CLIENT_DRIVE_LINK_FIELD) or "")
         )
 
-        effective_artist_folder_id = artist_folder_id or drive_link_folder_id
         logger.info(
             "Google Drive artist matched: client_name=%s label_name=%s record_id=%s",
             matching["client_name"],
@@ -553,7 +592,11 @@ def _resolve_parent_folder(service: Any, payload: Any) -> Tuple[str, Dict[str, A
         # The artist folder is the source of truth.
         # projects_folder_id from Airtable is treated as a cache only — never as a routing decision.
         # We always anchor to Clientes/{Artista}/Projetos and correct the cache when it is stale.
-        artist_folder = _get_folder_by_id(service, effective_artist_folder_id)
+        artist_folder, artist_folder_source = _resolve_accessible_artist_folder(
+            service,
+            artist_folder_id=artist_folder_id,
+            drive_link_folder_id=drive_link_folder_id,
+        )
         if artist_folder:
             logger.info(
                 "Google Drive artist folder source: client_name=%s artist_folder_id=%s",
@@ -607,6 +650,7 @@ def _resolve_parent_folder(service: Any, payload: Any) -> Tuple[str, Dict[str, A
                 "client_name": matching["client_name"],
                 "label_name": matching["label_name"],
                 "artist_folder_id": artist_folder["id"],
+                "artist_folder_source": artist_folder_source,
                 "projects_folder_id": projetos_folder["id"],
                 "projects_folder_created": projetos_folder.get("created", False),
                 "updated_airtable": should_update_airtable,
@@ -617,11 +661,117 @@ def _resolve_parent_folder(service: Any, payload: Any) -> Tuple[str, Dict[str, A
             f"{matching['client_name']}"
         )
 
-    if root_folder_id:
+    if root_folder_id and _root_fallback_allowed(payload):
         logger.info("Google Drive using root fallback folder: root_folder_id=%s", root_folder_id)
         return root_folder_id, {"strategy": "root_fallback"}
 
+    if root_folder_id:
+        raise RuntimeError(
+            "Could not match an active Airtable client; Google Drive root fallback "
+            "is disabled for this workspace."
+        )
+
     raise RuntimeError("Could not resolve Google Drive parent folder.")
+
+
+def audit_airtable_client_drive_folders(service: Any = None) -> Dict[str, Any]:
+    """Read-only validation of active [V2] Clientes Drive routing metadata."""
+    drive_service = service or _build_drive_service()
+    formula = (
+        f"AND("
+        f"{{{settings.AIRTABLE_CLIENT_STATUS_FIELD}}}='Ativo',"
+        f"NOT({{{settings.AIRTABLE_CLIENT_NAME_FIELD}}}='')"
+        f")"
+    )
+    records = _airtable_list_records({"filterByFormula": formula, "pageSize": "100"})
+    results: List[Dict[str, Any]] = []
+
+    for record in records:
+        fields = record.get("fields", {})
+        client_name = str(
+            _get_field_value(fields, settings.AIRTABLE_CLIENT_NAME_FIELD) or ""
+        ).strip()
+        artist_folder_id = _extract_folder_id(
+            str(
+                _get_field_value(
+                    fields,
+                    settings.AIRTABLE_CLIENT_ARTIST_FOLDER_ID_FIELD,
+                )
+                or ""
+            )
+        )
+        projects_folder_id = _extract_folder_id(
+            str(
+                _get_field_value(
+                    fields,
+                    settings.AIRTABLE_CLIENT_PROJECTS_FOLDER_ID_FIELD,
+                )
+                or ""
+            )
+        )
+        drive_link_folder_id = _extract_folder_id(
+            str(
+                _get_field_value(
+                    fields,
+                    settings.AIRTABLE_CLIENT_DRIVE_LINK_FIELD,
+                )
+                or ""
+            )
+        )
+        artist_folder, artist_folder_source = _resolve_accessible_artist_folder(
+            drive_service,
+            artist_folder_id=artist_folder_id,
+            drive_link_folder_id=drive_link_folder_id,
+        )
+
+        status = "ok"
+        actual_projects_folder_id: Optional[str] = None
+        if not artist_folder_id and not drive_link_folder_id:
+            status = "missing_artist_folder_reference"
+        elif not artist_folder:
+            status = "artist_folder_unavailable"
+        else:
+            projects_folder = _find_child_folder(
+                drive_service,
+                parent_id=artist_folder["id"],
+                name=_PROJECTS_FOLDER_NAME,
+            )
+            if not projects_folder:
+                status = "projects_folder_missing"
+            else:
+                actual_projects_folder_id = projects_folder["id"]
+                if projects_folder_id != actual_projects_folder_id:
+                    status = (
+                        "projects_cache_missing"
+                        if not projects_folder_id
+                        else "projects_cache_stale"
+                    )
+
+        results.append(
+            {
+                "record_id": record.get("id"),
+                "client_name": client_name,
+                "status": status,
+                "artist_folder_source": artist_folder_source,
+                "has_artist_folder_id": bool(artist_folder_id),
+                "has_drive_link_folder_id": bool(drive_link_folder_id),
+                "has_projects_folder_id": bool(projects_folder_id),
+                "actual_projects_folder_id": actual_projects_folder_id,
+            }
+        )
+
+    status_counts: Dict[str, int] = {}
+    for result in results:
+        status = result["status"]
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    return {
+        "ok": all(result["status"] == "ok" for result in results),
+        "mode": "read_only",
+        "total": len(results),
+        "status_counts": status_counts,
+        "clients": results,
+    }
 
 
 def sync_submission_to_google_drive(
