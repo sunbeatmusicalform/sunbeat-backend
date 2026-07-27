@@ -68,12 +68,32 @@ alter table public.people_registry_invites
         )
     );
 
+-- Produção já usa UUID para edit_token. Em ambientes antigos sem a coluna,
+-- o default preenche registros existentes antes de aplicar NOT NULL.
 alter table public.people_registry_records
-    add column if not exists edit_token text null;
+    add column if not exists edit_token uuid
+        not null default gen_random_uuid();
 
-create unique index if not exists idx_people_registry_records_edit_token
-    on public.people_registry_records (edit_token)
-    where edit_token is not null;
+do $$
+declare
+    edit_token_type text;
+begin
+    select c.udt_name
+      into edit_token_type
+      from information_schema.columns c
+     where c.table_schema = 'public'
+       and c.table_name = 'people_registry_records'
+       and c.column_name = 'edit_token';
+
+    if edit_token_type is distinct from 'uuid' then
+        raise exception
+            'people_registry_records.edit_token must be uuid, found %',
+            coalesce(edit_token_type, '<missing>');
+    end if;
+end $$;
+
+create unique index if not exists people_registry_records_edit_token_idx
+    on public.people_registry_records (edit_token);
 
 create index if not exists idx_people_registry_invites_workspace_status
     on public.people_registry_invites (workspace_slug, status);
@@ -84,13 +104,19 @@ create index if not exists idx_people_registry_invites_clearance_part
 create index if not exists idx_people_registry_invites_people_record
     on public.people_registry_invites (people_registry_record_id);
 
--- Convites são acessados somente pelo backend. O link público chama a API
--- FastAPI por token; o browser não consulta esta tabela pelo Data API.
+-- Registros e convites são acessados somente pelo backend. Links públicos
+-- chamam a API FastAPI; o browser não consulta estas tabelas pelo Data API.
+alter table public.people_registry_records enable row level security;
 alter table public.people_registry_invites enable row level security;
 
+revoke all privileges on table public.people_registry_records
+    from anon, authenticated;
 revoke all privileges on table public.people_registry_invites
     from anon, authenticated;
 
+grant select, insert, update, delete
+    on table public.people_registry_records
+    to service_role;
 grant select, insert, update, delete
     on table public.people_registry_invites
     to service_role;
