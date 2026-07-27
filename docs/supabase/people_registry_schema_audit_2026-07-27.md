@@ -59,15 +59,39 @@ A migration revisada:
 - Sunbeat Tables usa cliente admin server-side após verificar o workspace;
 - não foi encontrado acesso browser direto a `people_registry_records`.
 
+## Validação em banco descartável
+
+Em 27/07/2026, os dois arquivos foram executados em um PostgreSQL 16 local
+descartável, com os papéis padrão `anon`, `authenticated` e `service_role`:
+
+1. `people_registry_records.sql`;
+2. `people_registry_invites.sql`;
+3. reaplicação integral de `people_registry_invites.sql`.
+
+Resultado:
+
+- as duas execuções da migration terminaram sem erro;
+- a reaplicação não criou índices ou constraints duplicados;
+- RLS ficou habilitado em `people_registry_records` e
+  `people_registry_invites`;
+- `anon` e `authenticated` ficaram sem grants nas duas tabelas;
+- `service_role` recebeu apenas `SELECT`, `INSERT`, `UPDATE` e `DELETE`;
+- as duas tabelas permaneceram com zero registros no banco descartável.
+
+O container de teste foi encerrado e removido ao final.
+
 ## Gate
 
-Ainda não aplicar. Antes:
+Validação descartável e idempotência: concluídas.
 
-- executar a migration em branch/banco descartável;
-- reexecutar para confirmar idempotência;
-- rodar advisors de segurança e performance;
-- validar rotas públicas e dashboard com `service_role`;
-- aprovar separadamente aplicação em produção.
+Ainda não aplicar em produção antes de:
+
+- registrar autorização nominal para a migration;
+- guardar o commit/release implantado para rollback;
+- confirmar `people_invite_auto_create_enabled=false`;
+- confirmar que o primeiro smoke test não enviará e-mail;
+- aplicar a migration e reinspecionar RLS, grants, índices e contagens;
+- validar rotas públicas e dashboard com `service_role`.
 
 ## Security Advisor
 
