@@ -63,3 +63,13 @@ async def require_admin_token(
         return
 
     raise HTTPException(status_code=401, detail="unauthorized")
+
+
+async def require_internal_admin_token(
+    x_admin_token: Optional[str] = Header(default=None),
+) -> None:
+    incoming = x_admin_token.strip() if isinstance(x_admin_token, str) else ""
+    if _admin_token_is_valid(incoming):
+        return
+
+    raise HTTPException(status_code=401, detail="unauthorized")

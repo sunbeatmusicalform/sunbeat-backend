@@ -21,11 +21,12 @@ import copy
 import logging
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Header
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.core.config import settings
 from app.core.database import supabase
+from app.core.admin_auth import require_admin_token
 from app.services.workspace_config import get_workflow_operational_base
 
 logger = logging.getLogger(__name__)
@@ -84,12 +85,7 @@ _FLAG_DEFAULTS: Dict[str, Dict[str, bool]] = {
 # Auth — Header opcional → 401 explícito, nunca 422
 # ---------------------------------------------------------------------------
 
-async def _require_admin_token(
-    x_admin_token: Optional[str] = Header(default=None),
-) -> None:
-    expected = settings.INTERNAL_ADMIN_TOKEN
-    if not expected or not x_admin_token or x_admin_token != expected:
-        raise HTTPException(status_code=401, detail="unauthorized")
+_require_admin_token = require_admin_token
 
 
 # ---------------------------------------------------------------------------

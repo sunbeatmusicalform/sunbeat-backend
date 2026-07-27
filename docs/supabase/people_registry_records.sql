@@ -26,6 +26,7 @@ create table if not exists public.people_registry_records (
     airtable_base_id text null,
     airtable_table_name text null,
     airtable_record_id text null,
+    edit_token text null,
     created_at timestamptz not null default timezone('utc', now()),
     updated_at timestamptz not null default timezone('utc', now())
 );
@@ -44,3 +45,7 @@ create index if not exists idx_people_registry_records_email
 
 create index if not exists idx_people_registry_records_airtable_status
     on public.people_registry_records (airtable_sync_status);
+
+create unique index if not exists idx_people_registry_records_edit_token
+    on public.people_registry_records (edit_token)
+    where edit_token is not null;

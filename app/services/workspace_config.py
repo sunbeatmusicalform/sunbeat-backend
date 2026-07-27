@@ -69,6 +69,8 @@ _OPERATIONAL_EXTRA_SETTINGS: Dict[str, Dict[str, Any]] = {
             "clearance_case_table_override": None,
             "clearance_itens_table_override": None,
             "clearance_partes_table_override": None,
+            "people_invite_auto_create_enabled": False,
+            "people_invite_default_expiration_days": 14,
         },
         "drive": {
             "_target_label": "Clearance musical/nao-musical root folders",
@@ -388,4 +390,3 @@ def get_email_event_config(
         return {"recipients": [], "enabled": False}
     except Exception:
         return {"recipients": [], "enabled": False}
-

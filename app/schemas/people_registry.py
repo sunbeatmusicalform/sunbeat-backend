@@ -11,6 +11,16 @@ PeopleRegistryResponseStatus = Literal[
     "validated", "invalid", "created", "fetched", "conflict", "error"
 ]
 PeopleRegistryLookupConfidence = Literal["exact", "partial"]
+PeopleRegistryInviteStatus = Literal[
+    "pending",
+    "sent",
+    "opened",
+    "submitted",
+    "submitted_pending_airtable",
+    "failed",
+    "expired",
+    "discontinued",
+]
 
 
 class PeopleRegistryPartyPayload(BaseModel):
@@ -165,3 +175,107 @@ class PeopleRegistryLookupResponsePayload(BaseModel):
 
     ok: bool = True
     items: List[PeopleRegistryLookupItemPayload] = Field(default_factory=list)
+
+
+class PeopleRegistryInviteCreatePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    workspace_slug: str = Field(..., min_length=1)
+    profile: str = "atabaque_people_v1"
+    airtable_clearance_part_id: Optional[str] = None
+    context: Dict[str, Any] = Field(default_factory=dict)
+    expires_at: Optional[str] = None
+    expires_in_days: Optional[int] = Field(default=None, ge=1, le=120)
+
+
+class PeopleRegistryInvitePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    token: str
+    status: PeopleRegistryInviteStatus = "pending"
+    workspace_slug: str
+    profile: str
+    airtable_clearance_part_id: str
+    invite_url: str
+    context: Dict[str, Any] = Field(default_factory=dict)
+    people_registry_record_id: Optional[str] = None
+    people_airtable_record_id: Optional[str] = None
+    last_error: Optional[str] = None
+    expires_at: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    opened_at: Optional[str] = None
+    submitted_at: Optional[str] = None
+
+
+class PeopleRegistryInviteListResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ok: bool = True
+    items: List[PeopleRegistryInvitePayload] = Field(default_factory=list)
+    total: int = 0
+
+
+class PeopleRegistryInviteEmailPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    workspace_slug: str = Field(..., min_length=1)
+    to_email: Optional[EmailStr] = None
+    recipient_name: Optional[str] = None
+    message: Optional[str] = None
+
+
+class PeopleRegistryInviteErrorPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    code: str
+    message: str
+    stage: str
+
+
+class PeopleRegistryInviteEmailResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ok: bool = True
+    invite: Optional[PeopleRegistryInvitePayload] = None
+    provider_message_id: Optional[str] = None
+    error: Optional[PeopleRegistryInviteErrorPayload] = None
+
+
+class PeopleRegistryInviteResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ok: bool = True
+    status: PeopleRegistryInviteStatus = "pending"
+    invite: Optional[PeopleRegistryInvitePayload] = None
+    error: Optional[PeopleRegistryInviteErrorPayload] = None
+
+
+class PeopleRegistryInviteParticipationPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    confirmation_status: Optional[str] = "confirmado"
+    musical_role: Optional[str] = None
+    remuneration_type: Optional[str] = None
+    participation_percent: Optional[float] = None
+    fixed_amount: Optional[float] = None
+    notes: Optional[str] = None
+
+
+class PeopleRegistryInviteSubmitPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    person: PeopleRegistryPayload
+    participation: PeopleRegistryInviteParticipationPayload = Field(
+        default_factory=PeopleRegistryInviteParticipationPayload
+    )
+
+
+class PeopleRegistryInviteSubmitResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ok: bool = True
+    status: PeopleRegistryInviteStatus = "submitted"
+    invite: Optional[PeopleRegistryInvitePayload] = None
+    people: Optional[PeopleRegistryResponsePayload] = None
+    error: Optional[PeopleRegistryInviteErrorPayload] = None

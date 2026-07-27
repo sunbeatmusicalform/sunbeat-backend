@@ -56,13 +56,13 @@ Configuracao adicional:
 
 Campos comuns em `[V2] - Pessoas`:
 
-- `Nome de exibição`
-- `Tipo de pessoa`
-- `Nome legal / Razão social`
+- `Nome de Exibição`
+- `Tipo de Pessoa`
+- `Nome Legal / Razão Social`
 - `Documento`
 - `Funções`
 - `E-mail principal`
-- `Telefone principal`
+- `Telefone Principal`
 - `Site`
 - `Instagram`
 - `País`
@@ -74,16 +74,16 @@ Campos comuns em `[V2] - Pessoas`:
 - `Banco`
 - `Agência`
 - `Conta`
-- `Nome do titular da conta`
-- `Documento do titular da conta`
-- `Nome do empresário / responsável`
-- `Selo / gravadora`
-- `Observações internas`
+- `Nome do Titular da Conta`
+- `Documento do Titular da Conta`
+- `Nome do Empresário / Responsável`
+- `Selo / Gravadora`
+- `Observações Internas`
 
 Campo PF adicional:
 
-- `Nome artístico`
+- `Nome Artístico`
 
 Campo PJ adicional:
 
-- `Nome fantasia`
+- `Nome Fantasia`
