@@ -6,7 +6,7 @@ Projeto: `sunbeat-core`
 
 Project ref: `pjawmgcnccrdcpjmworg`
 
-## Escopo
+## Escopo inicial
 
 Foram consultados somente catálogos do Postgres:
 
@@ -17,15 +17,14 @@ Foram consultados somente catálogos do Postgres:
 - policies;
 - grants por role.
 
-Nenhum registro de cliente foi lido. Nenhuma migration, DDL ou escrita foi
-executada.
+Nenhum payload de cliente foi lido.
 
 ## Resultado
 
 ### `people_registry_invites`
 
-- a tabela ainda não existe;
-- a migration permanece necessária antes de ativar o fluxo de convites.
+- antes da migration, a tabela não existia;
+- após autorização, a tabela foi criada e permaneceu com zero registros.
 
 ### `people_registry_records`
 
@@ -33,9 +32,47 @@ executada.
 - `id` é `uuid`;
 - `edit_token` já existe como `uuid NOT NULL DEFAULT gen_random_uuid()`;
 - existe índice único `people_registry_records_edit_token_idx`;
-- RLS está desabilitado;
-- não existem policies;
-- `anon` e `authenticated` possuem grants amplos na tabela.
+- antes da migration, RLS estava desabilitado e `anon`/`authenticated`
+  possuíam grants amplos;
+- após a migration, RLS está habilitado e não há grants de tabela para
+  `anon` ou `authenticated`;
+- a contagem permaneceu em 13 registros, sem leitura de payloads.
+
+## Aplicação autorizada em produção
+
+Em 27/07/2026, a migration
+`docs/supabase/people_registry_invites.sql` foi aplicada ao projeto
+`sunbeat-core` (`pjawmgcnccrdcpjmworg`) via sessão autenticada do Supabase CLI.
+
+SHA-256 do arquivo aplicado:
+`2027436425e52acc6767333e04798fd5d746fedf4724048f823304fd88112996`.
+
+Pré-checagem:
+
+- projeto `ACTIVE_HEALTHY`, região `sa-east-1`;
+- `people_registry_records`: 13 registros;
+- `people_registry_invites`: ausente;
+- `people_registry_records`: RLS desabilitado;
+- `id` e `edit_token`: `uuid NOT NULL DEFAULT gen_random_uuid()`.
+
+Pós-checagem:
+
+- `people_registry_records`: 13 registros;
+- `people_registry_invites`: 0 registros;
+- RLS habilitado nas duas tabelas;
+- nenhum grant de tabela para `anon` ou `authenticated`;
+- `service_role` mantém CRUD nas duas tabelas;
+- os três índices de convites e o índice único de `edit_token` existem;
+- a foreign key para `people_registry_records(id)` usa `ON DELETE SET NULL`;
+- a constraint de status contém todos os oito estados esperados;
+- `airtable_clearance_part_id` é anulável;
+- nenhum registro de cliente foi criado, alterado ou removido.
+
+Nota de privilégio: além de CRUD, o catálogo gerenciado do Supabase reporta
+`REFERENCES`, `TRIGGER` e `TRUNCATE` para `service_role`. Isso já decorre do
+modelo de grants da plataforma e não expõe as tabelas a `anon` ou
+`authenticated`. Uma redução adicional de privilégios deve ser tratada como
+hardening separado, com teste de compatibilidade.
 
 ## Impacto na migration proposta
 
@@ -84,14 +121,23 @@ O container de teste foi encerrado e removido ao final.
 
 Validação descartável e idempotência: concluídas.
 
-Ainda não aplicar em produção antes de:
+Concluído:
 
-- registrar autorização nominal para a migration;
+- autorização nominal registrada nesta task;
+- migration aplicada e reinspecionada;
+- RLS, grants, índices, constraints, tipos e contagens confirmados;
+- nenhuma linha criada em `people_registry_invites`;
+- configuração do código preserva
+  `people_invite_auto_create_enabled=false`;
+- configuração do workflow `people_registry` preserva
+  `post_submit_email_enabled=false` e `edit_email_enabled=false`.
+
+Ainda antes de ativar o fluxo:
+
 - guardar o commit/release implantado para rollback;
-- confirmar `people_invite_auto_create_enabled=false`;
-- confirmar que o primeiro smoke test não enviará e-mail;
-- aplicar a migration e reinspecionar RLS, grants, índices e contagens;
-- validar rotas públicas e dashboard com `service_role`.
+- validar rotas públicas e dashboard com `service_role`;
+- fazer o primeiro smoke controlado sem envio de e-mail;
+- só então considerar habilitar auto-create.
 
 ## Security Advisor
 

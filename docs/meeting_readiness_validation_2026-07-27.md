@@ -31,15 +31,19 @@ Data: 2026-07-27
 ## Supabase
 
 - schema de produção auditado em leitura;
-- `people_registry_invites` ainda não existe;
+- `people_registry_invites` foi criada e permanece com zero registros;
 - `people_registry_records.id` e `edit_token` são UUID;
 - migration corrigida para preservar UUID, ativar RLS e retirar acesso direto
   de `anon` e `authenticated`;
 - migration aplicada duas vezes em PostgreSQL 16 descartável;
 - reaplicação concluída sem duplicar estruturas;
-- `service_role` recebeu apenas CRUD;
+- migration aplicada em produção após autorização;
+- contagem de `people_registry_records` permaneceu em 13;
+- RLS está habilitado nas duas tabelas e `anon`/`authenticated` não possuem
+  grants de tabela;
+- índices, tipos, foreign key e constraint de status foram reinspecionados;
 - banco descartável removido após a validação;
-- nenhuma migration foi aplicada em produção.
+- nenhum registro de cliente foi criado, editado ou removido.
 
 ## Airtable
 
@@ -48,14 +52,15 @@ Data: 2026-07-27
   e Pessoas foram confirmados;
 - os mappings de formato, escopo, status, tipo de direito e natureza do item são
   compatíveis com as opções vivas;
-- quatro campos de metadados esperados pelo backend ainda não existem em
-  `[V2] Clearance`:
+- os quatro campos de metadados esperados pelo backend já existem em
+  `[V2] Clearance` e estavam ocultos na visualização:
   - `Canal de Entrada`;
   - `Status da Sincronização Airtable`;
   - `ID da Submissão`;
   - `URL de Edição`;
-- nenhuma célula, registro, campo ou configuração foi alterada durante a
-  auditoria.
+- os tipos foram confirmados e as opções `Formulário` e `synced` existem;
+- nenhuma duplicata foi criada, nenhum registro foi alterado e a visualização
+  foi devolvida à configuração original de 16 campos ocultos.
 
 ## Rollback registrado
 
@@ -83,11 +88,9 @@ Data: 2026-07-27
 
 ## Gates restantes
 
-1. autorização para criar os quatro campos ausentes no Airtable;
-2. confirmação dos nomes/valores das flags efetivamente configuradas no Fly;
-3. autorização nominal para aplicar a migration no Supabase;
-4. merge/deploy do backend;
-5. smoke test sem e-mail e sem auto-create;
-6. merge/promoção do frontend;
-7. smoke test autenticado, isolamento por workspace e navegação;
-8. convite real e e-mail somente com destinatário nominal aprovado.
+1. confirmar os nomes/valores das flags efetivamente configuradas no Fly;
+2. merge/deploy do backend;
+3. smoke test sem e-mail e sem auto-create;
+4. merge/promoção do frontend;
+5. smoke test autenticado, isolamento por workspace e navegação;
+6. convite real e e-mail somente com destinatário nominal aprovado.

@@ -6,6 +6,9 @@ Base: `Workstation Atabaque` (`appGaV0kdkc2NEt0F`)
 
 Escopo: somente estrutura; nenhum registro foi criado, editado ou removido.
 
+Revalidação operacional após autorização: concluída em 27/07/2026. A
+visualização foi devolvida à configuração original de 16 campos ocultos.
+
 ## Tabelas confirmadas
 
 | Tabela | ID |
@@ -48,25 +51,22 @@ Opções confirmadas:
 - `Status`: `Inbox`, `Em análise`, `Aguardando retorno`, `Aprovado`,
   `Formalizado`, `Arquivado`.
 
-## Campos ausentes que bloqueiam a escrita atual
+## Campos de integração confirmados
 
-O payload de criação do backend também envia quatro campos que não existem na
-tabela em 2026-07-27:
+Na revalidação anterior à criação, o Airtable rejeitou `Canal de Entrada` como
+nome duplicado. A inspeção da lista completa de campos confirmou que os quatro
+campos já haviam sido criados e estavam apenas ocultos na visualização:
 
-| Campo esperado | Tipo recomendado | Valor inicial usado |
+| Campo | Tipo confirmado | Opção/valor usado |
 | --- | --- | --- |
-| `Canal de Entrada` | single select | `Formulário` |
-| `Status da Sincronização Airtable` | single select | `synced` |
-| `ID da Submissão` | texto | UUID/ID interno da submissão |
+| `Canal de Entrada` | single select | inclui `Formulário` |
+| `Status da Sincronização Airtable` | single select | inclui `synced` |
+| `ID da Submissão` | texto de uma linha | UUID/ID interno da submissão |
 | `URL de Edição` | URL | link público com token de edição |
 
-Enquanto esses campos estiverem ausentes,
-`sync_rights_clearance_submission_to_airtable` pode falhar na criação do caso
-antes de criar Itens e Partes.
-
-Recomendação: completar o schema com os quatro campos acima, preservando o
-contrato já coberto pelos testes. A alternativa de remover os metadados do
-payload reduz rastreabilidade operacional e dificulta idempotência e suporte.
+Não foi criada nenhuma duplicata e nenhum registro de cliente foi escrito. O
+contrato estrutural que bloqueava
+`sync_rights_clearance_submission_to_airtable` está atendido.
 
 `URL de Edição` deve ser tratada como informação confidencial, pois contém um
 token de capacidade. O acesso à base e a esse campo deve permanecer limitado à
@@ -116,7 +116,7 @@ Foram confirmados os campos usados no link-back e no cadastro, incluindo
 
 ## Gate antes de habilitar escrita
 
-1. criar e revisar os quatro campos ausentes;
+1. campos de integração revisados — concluído;
 2. manter `AIRTABLE_RIGHTS_CLEARANCE_MUSICAL_ENABLED=false` durante migration e
    deploy;
 3. manter `people_invite_auto_create_enabled=false`;
