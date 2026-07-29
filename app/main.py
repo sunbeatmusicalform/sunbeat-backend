@@ -37,6 +37,7 @@ app.add_middleware(
         "https://www.sunbeat.pro",
         "https://sunbeat.com.br",
         "https://www.sunbeat.com.br",
+        "https://sunbeat-frontend.fly.dev",
     ],
     allow_credentials=True,
     allow_methods=["*"],
