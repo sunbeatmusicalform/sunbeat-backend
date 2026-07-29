@@ -205,7 +205,10 @@ def verify_people_registry(
 
 
 @router.get("/records/{record_id}", response_model=PeopleRegistryResponsePayload)
-def get_people_registry_record(record_id: str):
+def get_people_registry_record(
+    record_id: str,
+    _: None = Depends(require_internal_admin_token),
+):
     response = get_people_registry_record_response(record_id)
 
     if response.ok:

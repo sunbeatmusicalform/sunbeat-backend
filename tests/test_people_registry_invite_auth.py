@@ -12,6 +12,8 @@ from app.schemas.people_registry import (
     PeopleRegistryInviteListResponsePayload,
     PeopleRegistryInvitePayload,
     PeopleRegistryInviteResponsePayload,
+    PeopleRegistryRecordPayload,
+    PeopleRegistryResponsePayload,
 )
 
 
@@ -102,6 +104,48 @@ class PeopleRegistryInviteAuthTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["invite"]["token"], "token-123")
+
+    def test_full_record_read_requires_internal_admin_token(self) -> None:
+        with (
+            patch.object(settings, "INTERNAL_ADMIN_TOKEN", "secret"),
+            patch(
+                "app.modules.people_registry.get_people_registry_record_response",
+            ) as get_record_mock,
+        ):
+            response = _client().get(
+                "/people-registry/records/11111111-1111-1111-1111-111111111111"
+            )
+
+        self.assertEqual(response.status_code, 401)
+        get_record_mock.assert_not_called()
+
+    def test_full_record_read_accepts_internal_admin_token(self) -> None:
+        record_id = "11111111-1111-1111-1111-111111111111"
+        with (
+            patch.object(settings, "INTERNAL_ADMIN_TOKEN", "secret"),
+            patch(
+                "app.modules.people_registry.get_people_registry_record_response",
+                return_value=PeopleRegistryResponsePayload(
+                    ok=True,
+                    status="fetched",
+                    record=PeopleRegistryRecordPayload(
+                        record_id=record_id,
+                        airtable_sync_status="synced",
+                        edit_token="22222222-2222-2222-2222-222222222222",
+                        created_at="2026-07-29T00:00:00+00:00",
+                        updated_at="2026-07-29T00:00:00+00:00",
+                    ),
+                ),
+            ) as get_record_mock,
+        ):
+            response = _client().get(
+                f"/people-registry/records/{record_id}",
+                headers={"X-Admin-Token": "secret"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["record"]["record_id"], record_id)
+        get_record_mock.assert_called_once_with(record_id)
 
 
 if __name__ == "__main__":
