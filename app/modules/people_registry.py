@@ -15,6 +15,7 @@ from app.schemas.people_registry import (
     PeopleRegistryLookupResponsePayload,
     PeopleRegistryPayload,
     PeopleRegistryResponsePayload,
+    PeopleRegistryVerifyResponsePayload,
 )
 from app.services.people_registry_invites import (
     create_people_registry_invite_response,
@@ -31,6 +32,7 @@ from app.services.people_registry import (
     lookup_people_registry_records,
     update_people_registry_record_response,
 )
+from app.services.people_registry_verify import verify_people_registry_records
 
 router = APIRouter(prefix="/people-registry", tags=["people_registry"])
 
@@ -188,6 +190,17 @@ def lookup_people_registry(
         query=query,
         roles=roles,
         limit=limit,
+    )
+
+
+@router.get("/verify", response_model=PeopleRegistryVerifyResponsePayload)
+def verify_people_registry(
+    workspace_slug: str = Query(..., min_length=1),
+    query: str = Query(..., min_length=1),
+):
+    return verify_people_registry_records(
+        workspace_slug=workspace_slug,
+        query=query,
     )
 
 

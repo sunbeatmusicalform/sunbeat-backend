@@ -122,6 +122,7 @@ _OPERATIONAL_EXTRA_SETTINGS: Dict[str, Dict[str, Any]] = {
             ],
             "base_id_override": None,
             "people_registry_table_override": "[V2] - Pessoas",
+            "people_registry_legacy_table_override": "Dados Cadastrais",
         },
         "drive": {
             "_target_label": "Nao mapeado para sync operacional nesta etapa",

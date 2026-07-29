@@ -142,6 +142,7 @@ class AirtableExtraPatch(BaseModel):
     table_override: Optional[str] = None
     company_registry_table_override: Optional[str] = None
     people_registry_table_override: Optional[str] = None
+    people_registry_legacy_table_override: Optional[str] = None
     merge_keys: Optional[List[AirtableMergeKeyPatch]] = None
     field_map: Optional[Dict[str, Any]] = None
 
@@ -150,6 +151,7 @@ class AirtableExtraPatch(BaseModel):
         "table_override",
         "company_registry_table_override",
         "people_registry_table_override",
+        "people_registry_legacy_table_override",
         mode="before",
     )
     @classmethod

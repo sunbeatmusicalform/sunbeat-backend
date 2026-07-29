@@ -11,6 +11,13 @@ PeopleRegistryResponseStatus = Literal[
     "validated", "invalid", "created", "fetched", "conflict", "error"
 ]
 PeopleRegistryLookupConfidence = Literal["exact", "partial"]
+PeopleRegistryVerifyVerdict = Literal[
+    "ambas",
+    "so_v2",
+    "so_legado",
+    "nao_encontrado",
+]
+PeopleRegistryVerifyMatchBy = Literal["email", "documento", "nome"]
 PeopleRegistryInviteStatus = Literal[
     "pending",
     "sent",
@@ -175,6 +182,25 @@ class PeopleRegistryLookupResponsePayload(BaseModel):
 
     ok: bool = True
     items: List[PeopleRegistryLookupItemPayload] = Field(default_factory=list)
+
+
+class PeopleRegistryVerifyMatchPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    record_id: str
+    display_name: Optional[str] = None
+    match_by: PeopleRegistryVerifyMatchBy
+
+
+class PeopleRegistryVerifyResponsePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ok: bool = True
+    query: str
+    verdict: PeopleRegistryVerifyVerdict
+    dados_cadastrais: Optional[PeopleRegistryVerifyMatchPayload] = None
+    v2_pessoas: Optional[PeopleRegistryVerifyMatchPayload] = None
+    acao: str
 
 
 class PeopleRegistryInviteCreatePayload(BaseModel):
