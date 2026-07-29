@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.modules.admin_config import router as admin_config_router
 from app.modules.ai_gateway import router as ai_gateway_router
+from app.modules.drive_config import router as drive_config_router
 from app.modules.people_registry import router as people_registry_router
 from app.modules.release_intake_history import router as release_intake_history_router
 from app.modules.release_drafts import router as drafts_router
@@ -44,6 +45,7 @@ app.add_middleware(
 
 app.include_router(admin_config_router)
 app.include_router(drafts_router)
+app.include_router(drive_config_router)
 app.include_router(people_registry_router)
 app.include_router(release_intake_history_router)
 app.include_router(submissions_router)
