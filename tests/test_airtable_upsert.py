@@ -216,7 +216,11 @@ class AirtableUpsertTests(unittest.TestCase):
         with (
             patch.object(airtable_module, "supabase", fake_supabase),
             patch.object(airtable_module, "_request_json", side_effect=request_side_effect),
-            patch.object(airtable_module, "_table_url", side_effect=lambda table_name: f"https://airtable/{table_name}"),
+            patch.object(
+                airtable_module,
+                "_table_url",
+                side_effect=lambda table_name, _base_id=None: f"https://airtable/{table_name}",
+            ),
             patch.object(airtable_module, "_tracks_table_name", return_value="tracks"),
             patch.object(airtable_module, "_track_project_link_field", return_value="Projeto"),
             patch.object(airtable_module, "_track_status_field", return_value="Status da Faixa"),
@@ -315,7 +319,11 @@ class AirtableUpsertTests(unittest.TestCase):
         with (
             patch.object(airtable_module, "supabase", fake_supabase),
             patch.object(airtable_module, "_request_json", side_effect=request_side_effect),
-            patch.object(airtable_module, "_table_url", side_effect=lambda table_name: f"https://airtable/{table_name}"),
+            patch.object(
+                airtable_module,
+                "_table_url",
+                side_effect=lambda table_name, _base_id=None: f"https://airtable/{table_name}",
+            ),
             patch.object(airtable_module, "_tracks_table_name", return_value="tracks"),
             patch.object(airtable_module, "_track_project_link_field", return_value="Projeto"),
             patch.object(airtable_module, "_track_status_field", return_value="Status da Faixa"),
@@ -394,7 +402,11 @@ class AirtableUpsertTests(unittest.TestCase):
         with (
             patch.object(airtable_module, "supabase", fake_supabase),
             patch.object(airtable_module, "_request_json", side_effect=request_side_effect),
-            patch.object(airtable_module, "_table_url", side_effect=lambda table_name: f"https://airtable/{table_name}"),
+            patch.object(
+                airtable_module,
+                "_table_url",
+                side_effect=lambda table_name, _base_id=None: f"https://airtable/{table_name}",
+            ),
             patch.object(airtable_module, "_tracks_table_name", return_value="tracks"),
             patch.object(airtable_module, "_track_project_link_field", return_value="Projeto"),
             patch.object(airtable_module, "_track_status_field", return_value="Status da Faixa"),

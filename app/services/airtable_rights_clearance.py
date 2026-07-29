@@ -21,6 +21,7 @@ Returns:
     "airtable_tracks": list,
     "airtable_itens": list,
     "airtable_partes": list,
+    "people_invites": list,
   }
 """
 
@@ -45,6 +46,32 @@ ACTIVE_FORMATS = {
 CLEARANCE_V2_TABLE     = "[V2] Clearance"
 CLEARANCE_ITENS_TABLE  = "[V2] Clearance Itens"
 CLEARANCE_PARTES_TABLE = "[V2] Clearance Partes"
+
+# Airtable field names are intentionally kept in Portuguese because the client
+# facing base is the source of truth for operations.
+CLEARANCE_FIELDS = {
+    "case_name": "Nome do Caso",
+    "format": "Formato do Clearance",
+    "requester_name": "Nome do Solicitante",
+    "requester_email": "E-mail do Solicitante",
+    "requester_company": "Empresa do Solicitante",
+    "project_title": "Título do Projeto / Campanha",
+    "sync_status": "Status da Sincronização Airtable",
+    "submission_id": "ID da Submissão",
+    "edit_url": "URL de Edição",
+}
+
+ITEM_FIELDS = {
+    "case": "Caso de Clearance",
+}
+
+PARTE_FIELDS = {
+    "primary": "Nome da Parte no Caso",
+    "case": "Caso de Clearance",
+    "item": "Item do Caso",
+    "role_case": "Papel no Caso",
+    "signing_email": "E-mail de Assinatura",
+}
 
 # Formats that produce [V2] Clearance Itens (one per track)
 ITENS_FORMATS = {"music_release_clearance_intake"}
@@ -203,18 +230,18 @@ def _build_record_fields(
     )
 
     fields: Dict[str, Any] = {
-        "Nome do Case": nome_do_case,
-        "Clearance Format": clearance_format,
+        CLEARANCE_FIELDS["case_name"]: nome_do_case,
+        CLEARANCE_FIELDS["format"]: clearance_format,
         "Status": "Inbox",
-        "Solicitante Nome": _safe_str(r.get("requester_name")),
-        "Solicitante Email": _safe_str(r.get("requester_email")),
-        "Empresa Solicitante": _safe_str(r.get("requester_company")),
+        CLEARANCE_FIELDS["requester_name"]: _safe_str(r.get("requester_name")),
+        CLEARANCE_FIELDS["requester_email"]: _safe_str(r.get("requester_email")),
+        CLEARANCE_FIELDS["requester_company"]: _safe_str(r.get("requester_company")),
         "Cliente / Contratante": _safe_str(pc.get("client_or_distributor")),
-        "Título do Projeto/Campanha": titulo_campanha or project_title,
+        CLEARANCE_FIELDS["project_title"]: titulo_campanha or project_title,
         "Data de Solicitação": _today_iso(),
         "Canal de Entrada": "Formulário",
-        "Airtable Sync Status": "synced",
-        "Submission ID": submission_id,
+        CLEARANCE_FIELDS["sync_status"]: "synced",
+        CLEARANCE_FIELDS["submission_id"]: submission_id,
     }
 
     # Escopo singleSelect
@@ -241,7 +268,7 @@ def _build_record_fields(
     if observacoes:
         fields["Observações Operacionais"] = observacoes
     if edit_url:
-        fields["Edit URL"] = edit_url
+        fields[CLEARANCE_FIELDS["edit_url"]] = edit_url
 
     # Drop empty strings (Airtable accepts "" but it is noise)
     fields = {k: v for k, v in fields.items() if v is not None and v != ""}
@@ -289,7 +316,7 @@ def update_rights_clearance_case_in_airtable(
 
     # Rebuild the edit URL using the existing token that is already stored in Airtable.
     # We pass None here so it will try to build from the token embedded in the case;
-    # in practice the case already has the correct Edit URL — we just refresh other fields.
+    # in practice the case already has the correct URL de Edição — we just refresh other fields.
     edit_url = None  # intentionally omitted: do not overwrite the stored edit URL
 
     fields = _build_record_fields(
@@ -303,7 +330,7 @@ def update_rights_clearance_case_in_airtable(
     )
 
     # Remove system-assigned fields that must not be overwritten on an update
-    for immutable in ("Status", "Canal de Entrada", "Data de Solicitação", "Airtable Sync Status"):
+    for immutable in ("Status", "Canal de Entrada", "Data de Solicitação", CLEARANCE_FIELDS["sync_status"]):
         fields.pop(immutable, None)
 
     bid = _base or _base_id()
@@ -353,7 +380,7 @@ def _build_item_fields(track: Dict[str, Any], case_id: str) -> Dict[str, Any]:
     - 'Natureza do Item' valid choices: Obra, Fonograma, Contrato, Autorização,
        Licença, Aprovação, Documento de suporte. We use 'Fonograma' (not 'Faixa'
        which does not exist in the Airtable schema).
-    - 'Clearance Case' is multipleRecordLinks -> array of record IDs.
+    - 'Caso de Clearance' is multipleRecordLinks -> array of record IDs.
     """
     title = _safe_str(track.get("title"))
     isrc  = _safe_str(track.get("isrc_code"))
@@ -361,7 +388,7 @@ def _build_item_fields(track: Dict[str, Any], case_id: str) -> Dict[str, Any]:
 
     fields: Dict[str, Any] = {
         "Nome do Item":        title,
-        "Clearance Case":      [case_id],
+        ITEM_FIELDS["case"]:   [case_id],
         "Tipo de Direito":     "Fonograma / Master",
         "Natureza do Item":    "Fonograma",
         "Título do Fonograma": title,
@@ -445,15 +472,16 @@ def _build_parte_fields(
       Diretor, Criativo, Outro
     """
     fields: Dict[str, Any] = {
-        "Nome da Parte":       nome,
-        "Clearance Case":      [case_id],
-        "Papel no Case":       papel_no_case,
-        "Status de Aprovação": "Pendente",
+        PARTE_FIELDS["primary"]: nome,
+        "Nome da Parte":         nome,
+        PARTE_FIELDS["case"]:    [case_id],
+        PARTE_FIELDS["role_case"]: papel_no_case,
+        "Status de Aprovação":   "Pendente",
     }
     if item_id:
-        fields["Clearance Item"] = [item_id]
+        fields[PARTE_FIELDS["item"]] = [item_id]
     if email:
-        fields["Email de Assinatura"] = email
+        fields[PARTE_FIELDS["signing_email"]] = email
     if observacoes:
         fields["Observações"] = observacoes
 
@@ -469,11 +497,11 @@ def _collect_case_partes(
     case_id: str,
 ) -> List[Dict[str, Any]]:
     """
-    Assembles case-level Partes (no Clearance Item link).
+    Assembles case-level Partes with no Item do Caso link.
 
     Always created:
       - Solicitante (requester_name)  -> Responsável Contratual
-      - Empresa Solicitante           -> Contratante  (when distinct from name)
+      - Empresa do Solicitante        -> Contratante  (when distinct from name)
       - Cliente / Contratante         -> Cliente
 
     music_project_track only:
@@ -541,7 +569,7 @@ def _collect_item_partes(
     item_id: str,
 ) -> List[Dict[str, Any]]:
     """
-    Assembles item-level Partes (linked to both Clearance Case and Clearance Item).
+    Assembles item-level Partes linked to both Caso de Clearance and Item do Caso.
     One entry per filled track field: primary_artists, authors, publishers, phonogram_owner.
     """
     partes: List[Dict[str, Any]] = []
@@ -590,6 +618,133 @@ def _create_clearance_partes(
     return created
 
 
+def _first_linked_record_id(value: Any) -> Optional[str]:
+    if isinstance(value, list) and value:
+        return _safe_str(value[0]) or None
+    return _safe_str(value) or None
+
+
+def _create_people_invites_for_partes(
+    *,
+    workspace_slug: str,
+    airtable_case_record: Dict[str, Any],
+    airtable_partes: List[Dict[str, Any]],
+    airtable_itens: List[Dict[str, Any]],
+    project_context: Dict[str, Any],
+    clearance_scope: Dict[str, Any],
+    config: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    if not workspace_slug or not airtable_partes:
+        return []
+
+    try:
+        from app.schemas.people_registry import PeopleRegistryInviteCreatePayload
+        from app.services.people_registry_invites import (
+            create_people_registry_invite_response,
+        )
+    except Exception:
+        logger.exception("Could not import people registry invite service.")
+        return []
+
+    try:
+        expiration_days = int(config.get("people_invite_default_expiration_days") or 14)
+    except (TypeError, ValueError):
+        expiration_days = 14
+
+    profile = _safe_str(config.get("people_invite_profile")) or "atabaque_people_v1"
+    case_fields = airtable_case_record.get("fields") if isinstance(airtable_case_record, dict) else {}
+    case_name = _safe_str((case_fields or {}).get(CLEARANCE_FIELDS["case_name"]))
+    project_title = (
+        _safe_str(project_context.get("project_title"))
+        or _safe_str(clearance_scope.get("music_title"))
+        or _safe_str(clearance_scope.get("product_or_campaign_name"))
+        or _safe_str((case_fields or {}).get(CLEARANCE_FIELDS["project_title"]))
+        or case_name
+    )
+
+    item_titles: Dict[str, str] = {}
+    for item in airtable_itens:
+        item_fields = item.get("fields") if isinstance(item, dict) else {}
+        item_id = _safe_str(item.get("id") if isinstance(item, dict) else "")
+        item_title = _safe_str((item_fields or {}).get("Nome do Item"))
+        if item_id and item_title:
+            item_titles[item_id] = item_title
+
+    created_invites: List[Dict[str, Any]] = []
+    for parte in airtable_partes:
+        if not isinstance(parte, dict):
+            continue
+
+        parte_id = _safe_str(parte.get("id"))
+        fields = parte.get("fields") if isinstance(parte.get("fields"), dict) else {}
+        if not parte_id:
+            continue
+
+        party_name = (
+            _safe_str(fields.get(PARTE_FIELDS["primary"]))
+            or _safe_str(fields.get("Nome da Parte"))
+        )
+        if not party_name:
+            continue
+
+        item_id = _first_linked_record_id(fields.get(PARTE_FIELDS["item"]))
+        track_title = item_titles.get(item_id or "", "")
+        signing_email = _safe_str(fields.get(PARTE_FIELDS["signing_email"]))
+        role = _safe_str(fields.get(PARTE_FIELDS["role_case"]))
+
+        invite_payload = PeopleRegistryInviteCreatePayload(
+            workspace_slug=workspace_slug,
+            profile=profile,
+            airtable_clearance_part_id=parte_id,
+            expires_in_days=max(1, min(expiration_days, 120)),
+            context={
+                "source": "rights_clearance_airtable_sync",
+                "party_name": party_name,
+                "signing_email": signing_email,
+                "email": signing_email,
+                "requested_role": role,
+                "project_title": project_title,
+                "track_title": track_title,
+                "clearance_case_name": case_name,
+                "clearance_item_name": track_title,
+                "airtable_clearance_case_id": _safe_str(airtable_case_record.get("id")),
+                "airtable_clearance_part_id": parte_id,
+                "visible_sections": ["contact", "additionalInfo"],
+            },
+        )
+
+        try:
+            response = create_people_registry_invite_response(invite_payload)
+            if response.ok and response.invite:
+                created_invites.append(response.invite.model_dump(mode="json"))
+            else:
+                created_invites.append(
+                    {
+                        "airtable_clearance_part_id": parte_id,
+                        "status": "failed",
+                        "party_name": party_name,
+                        "error": response.error.model_dump(mode="json")
+                        if response.error
+                        else None,
+                    }
+                )
+        except Exception as exc:
+            logger.exception(
+                "Could not create people registry invite for clearance part=%s",
+                parte_id,
+            )
+            created_invites.append(
+                {
+                    "airtable_clearance_part_id": parte_id,
+                    "status": "failed",
+                    "party_name": party_name,
+                    "error": str(exc),
+                }
+            )
+
+    return created_invites
+
+
 # --- Public entry point -------------------------------------------------------
 
 
@@ -613,6 +768,7 @@ def sync_rights_clearance_to_airtable(
         "airtable_tracks": list,
         "airtable_itens": list,
         "airtable_partes": list,
+        "people_invites": list,
       }
     """
     if not settings.AIRTABLE_RIGHTS_CLEARANCE_MUSICAL_ENABLED:
@@ -627,6 +783,7 @@ def sync_rights_clearance_to_airtable(
             "airtable_tracks": [],
             "airtable_itens": [],
             "airtable_partes": [],
+            "people_invites": [],
         }
 
     clearance_format: str = _safe_str(
@@ -646,6 +803,7 @@ def sync_rights_clearance_to_airtable(
             "airtable_tracks": [],
             "airtable_itens": [],
             "airtable_partes": [],
+            "people_invites": [],
         }
 
     requester         = _safe_dict(getattr(payload, "requester_identification", None))
@@ -679,7 +837,7 @@ def sync_rights_clearance_to_airtable(
         "Creating [V2] Clearance record: format=%s submission_id=%s nome=%r",
         clearance_format,
         submission_id,
-        fields.get("Nome do Case"),
+        fields.get(CLEARANCE_FIELDS["case_name"]),
     )
 
     airtable_record = _create_clearance_record(fields, base_id=_base, table=_case_table)
@@ -719,6 +877,7 @@ def sync_rights_clearance_to_airtable(
 
     # ---- Etapa 3: [V2] Clearance Partes (all formats) ------------------------
     airtable_partes: List[Dict[str, Any]] = []
+    people_invites: List[Dict[str, Any]] = []
 
     try:
         all_partes: List[Dict[str, Any]] = _collect_case_partes(
@@ -750,6 +909,22 @@ def sync_rights_clearance_to_airtable(
                 case_id,
                 submission_id,
             )
+            if bool(_at_extra.get("people_invite_auto_create_enabled")):
+                people_invites = _create_people_invites_for_partes(
+                    workspace_slug=workspace_slug,
+                    airtable_case_record=airtable_record,
+                    airtable_partes=airtable_partes,
+                    airtable_itens=airtable_itens,
+                    project_context=project_context,
+                    clearance_scope=clearance_scope,
+                    config=_at_extra,
+                )
+                logger.info(
+                    "People registry invites created from clearance sync: count=%d case=%s submission_id=%s",
+                    len(people_invites),
+                    case_id,
+                    submission_id,
+                )
 
     except Exception:
         # Non-fatal: case and itens are already intact
@@ -767,4 +942,5 @@ def sync_rights_clearance_to_airtable(
         "airtable_tracks": [],
         "airtable_itens": airtable_itens,
         "airtable_partes": airtable_partes,
+        "people_invites": people_invites,
     }

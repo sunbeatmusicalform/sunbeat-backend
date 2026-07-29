@@ -139,6 +139,33 @@ def build_edit_url(edit_token: str, workspace_slug: str = "atabaque") -> str:
     return f"{base}/intake/{workspace_slug}?edit_token={edit_token}"
 
 
+def build_workflow_edit_url(
+    *,
+    edit_token: str,
+    workspace_slug: str = "atabaque",
+    workflow_type: Optional[str] = None,
+) -> str:
+    if not workflow_type or workflow_type == "release_intake":
+        return build_edit_url(edit_token=edit_token, workspace_slug=workspace_slug)
+
+    try:
+        from app.modules.workflow_registry import build_frontend_workflow_path
+
+        base = settings.FRONTEND_BASE_URL.rstrip("/")
+        path = build_frontend_workflow_path(
+            workspace_slug=workspace_slug,
+            workflow_type=workflow_type,
+        )
+        return f"{base}{path}?edit_token={edit_token}"
+    except Exception:
+        logger.warning(
+            "Could not build workflow edit URL workspace_slug=%s workflow_type=%s",
+            workspace_slug,
+            workflow_type,
+        )
+        return build_edit_url(edit_token=edit_token, workspace_slug=workspace_slug)
+
+
 def build_draft_resume_url(draft_token: str, workspace_slug: str = "atabaque") -> str:
     base = settings.FRONTEND_BASE_URL.rstrip("/")
     return f"{base}/intake/{workspace_slug}?draft={draft_token}"
@@ -209,6 +236,12 @@ def send_edit_link_email(
         edit_token=edit_token,
         workspace_slug=workspace_slug,
     )
+    if workflow_type == "rights_clearance":
+        edit_url = build_workflow_edit_url(
+            edit_token=edit_token,
+            workspace_slug=workspace_slug,
+            workflow_type=workflow_type,
+        )
 
     safe_project_title = (project_title or "").strip() or "Projeto sem titulo"
     greeting = (
@@ -387,6 +420,90 @@ def send_draft_link_email(
     )
 
 
+def send_people_registry_invite_email(
+    *,
+    to_email: str,
+    invite_url: str,
+    recipient_name: Optional[str] = None,
+    project_title: Optional[str] = None,
+    track_title: Optional[str] = None,
+    role: Optional[str] = None,
+    remuneration: Optional[Any] = None,
+    expires_at: Optional[str] = None,
+    message: Optional[str] = None,
+    workspace_slug: str = "atabaque",
+) -> Dict[str, Any]:
+    logger.info(
+        "send_people_registry_invite_email workspace_slug=%s to_email=%s project_title=%s track_title=%s",
+        workspace_slug,
+        to_email,
+        project_title,
+        track_title,
+    )
+
+    safe_project = escape(str(project_title or "projeto informado").strip())
+    safe_track = escape(str(track_title or "").strip())
+    safe_role = escape(str(role or "").strip())
+    safe_remuneration = escape(str(remuneration or "").strip())
+    safe_message = escape(str(message or "").strip())
+    safe_invite_url = escape(invite_url)
+    greeting = (
+        f"Ola, {escape(recipient_name)}!"
+        if recipient_name
+        else "Ola!"
+    )
+
+    details_rows = [
+        ("Projeto", safe_project),
+        ("Faixa", safe_track),
+        ("Funcao", safe_role),
+        ("Remuneracao", safe_remuneration),
+    ]
+    rows_html = "".join(
+        f"""
+        <tr>
+          <td style="padding: 8px 0; color: #6b7280;">{label}</td>
+          <td style="padding: 8px 0;"><strong>{value}</strong></td>
+        </tr>
+        """
+        for label, value in details_rows
+        if value
+    )
+    expires_copy = (
+        f"<p>Esse link fica disponivel ate <strong>{escape(str(expires_at))}</strong>.</p>"
+        if expires_at
+        else ""
+    )
+    message_copy = f"<p>{safe_message}</p>" if safe_message else ""
+
+    subject = f"Cadastro para projeto - {project_title or 'Sunbeat'}"
+    html = _wrap_email_html(
+        f"""
+        <p>{greeting}</p>
+        <p>Voce recebeu um link para informar seus dados de cadastro relacionados a um projeto.</p>
+        {message_copy}
+        <table style="border-collapse: collapse; width: 100%; margin: 20px 0;">
+          <tbody>{rows_html}</tbody>
+        </table>
+        <p>Use o link abaixo para preencher ou confirmar as informacoes:</p>
+        <p>
+          <a href="{safe_invite_url}" style="color: #2563eb; text-decoration: none;">
+            {safe_invite_url}
+          </a>
+        </p>
+        {expires_copy}
+        <p>Se voce nao reconhece este pedido, pode ignorar este email.</p>
+        """
+    )
+
+    return _post_resend(
+        to_email=to_email,
+        subject=subject,
+        html=html,
+        edit_url=invite_url,
+    ) | {"to_email": to_email, "invite_url": invite_url}
+
+
 def send_first_stage_completion_email(
     *,
     to_emails: Iterable[str],
@@ -438,12 +555,18 @@ def send_first_stage_completion_email(
         """
     )
 
-    return _post_resend(
+    result = _post_resend(
         to_email=recipients,
         subject=subject,
         html=html,
         idempotency_key=idempotency_key,
-    ) | {"draft_url": draft_url}
+    )
+    status = (
+        "sent"
+        if result.get("provider_message_id")
+        else "sent_without_message_id"
+    )
+    return result | {"draft_url": draft_url, "status": status}
 
 
 def send_submission_summary_email(

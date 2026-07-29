@@ -12,6 +12,7 @@ from app.core.config import settings
 from app.services.workspace_config import get_airtable_extra_config
 from app.core.database import supabase
 from app.schemas.people_registry import PeopleRegistryPreparedPayload
+from app.services.people_registry_documents import format_document_id_for_display
 
 AIRTABLE_API_URL = "https://api.airtable.com/v0"
 PEOPLE_REGISTRY_TABLE = "people_registry_records"
@@ -21,6 +22,36 @@ MAX_RETRIES = 3
 RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 ATABAQUE_RESPONSIBLE_COMPANY = "Atabaque"
 ATABAQUE_RECEIVED_STATUS = "Informações Recebidas"
+
+# Airtable field names are client-facing and remain in Portuguese.
+PESSOAS_FIELDS = {
+    "display_name": "Nome de Exibição",
+    "party_kind": "Tipo de Pessoa",
+    "legal_name": "Nome Legal / Razão Social",
+    "document": "Documento",
+    "roles": "Funções",
+    "stage_name": "Nome Artístico",
+    "trade_name": "Nome Fantasia",
+    "email": "E-mail principal",
+    "phone": "Telefone Principal",
+    "website": "Site",
+    "instagram": "Instagram",
+    "country": "País",
+    "state_region": "Estado / Região",
+    "city": "Cidade",
+    "postal_code": "CEP",
+    "address": "Endereço",
+    "pix_key": "Chave Pix",
+    "bank_name": "Banco",
+    "bank_agency": "Agência",
+    "account_number": "Conta",
+    "account_holder_name": "Nome do Titular da Conta",
+    "account_holder_document": "Documento do Titular da Conta",
+    "manager_name": "Nome do Empresário / Responsável",
+    "label_name": "Selo / Gravadora",
+    "internal_notes": "Observações Internas",
+}
+
 PEOPLE_REGISTRY_ROLE_ALIASES = {
     "artist": "artista",
     "producer": "produtor",
@@ -276,35 +307,39 @@ def _build_atabaque_airtable_fields(
     notes_text = _build_notes_text(prepared)
 
     fields: Dict[str, Any] = {
-        "Nome de exibição": prepared.party.display_name,
-        "Tipo de pessoa": prepared.party.party_kind,
-        "Nome legal / Razão social": prepared.party.legal_name,
-        "Documento": prepared.party.document_id,
-        "Funções": _normalize_roles(prepared.party.roles),
-        "E-mail principal": prepared.contact.email_primary,
-        "Telefone principal": prepared.contact.phone_primary,
-        "Site": prepared.contact.website,
-        "Instagram": prepared.contact.instagram,
-        "País": prepared.address.country,
-        "Estado / Região": prepared.address.state_region,
-        "Cidade": prepared.address.city,
-        "CEP": prepared.address.postal_code,
-        "Endereço": street_address,
-        "Chave Pix": prepared.banking.pix_key,
-        "Banco": prepared.banking.bank_name,
-        "Agência": prepared.banking.bank_agency,
-        "Conta": prepared.banking.account_number,
-        "Nome do titular da conta": prepared.banking.account_holder_name,
-        "Documento do titular da conta": prepared.banking.account_holder_document_id,
-        "Nome do empresário / responsável": prepared.additional_info.manager_name,
-        "Selo / gravadora": prepared.additional_info.label_name,
-        "Observações internas": notes_text,
+        PESSOAS_FIELDS["display_name"]: prepared.party.display_name,
+        PESSOAS_FIELDS["party_kind"]: prepared.party.party_kind,
+        PESSOAS_FIELDS["legal_name"]: prepared.party.legal_name,
+        PESSOAS_FIELDS["document"]: format_document_id_for_display(
+            prepared.party.document_id
+        ),
+        PESSOAS_FIELDS["roles"]: _normalize_roles(prepared.party.roles),
+        PESSOAS_FIELDS["email"]: prepared.contact.email_primary,
+        PESSOAS_FIELDS["phone"]: prepared.contact.phone_primary,
+        PESSOAS_FIELDS["website"]: prepared.contact.website,
+        PESSOAS_FIELDS["instagram"]: prepared.contact.instagram,
+        PESSOAS_FIELDS["country"]: prepared.address.country,
+        PESSOAS_FIELDS["state_region"]: prepared.address.state_region,
+        PESSOAS_FIELDS["city"]: prepared.address.city,
+        PESSOAS_FIELDS["postal_code"]: prepared.address.postal_code,
+        PESSOAS_FIELDS["address"]: street_address,
+        PESSOAS_FIELDS["pix_key"]: prepared.banking.pix_key,
+        PESSOAS_FIELDS["bank_name"]: prepared.banking.bank_name,
+        PESSOAS_FIELDS["bank_agency"]: prepared.banking.bank_agency,
+        PESSOAS_FIELDS["account_number"]: prepared.banking.account_number,
+        PESSOAS_FIELDS["account_holder_name"]: prepared.banking.account_holder_name,
+        PESSOAS_FIELDS["account_holder_document"]: format_document_id_for_display(
+            prepared.banking.account_holder_document_id
+        ),
+        PESSOAS_FIELDS["manager_name"]: prepared.additional_info.manager_name,
+        PESSOAS_FIELDS["label_name"]: prepared.additional_info.label_name,
+        PESSOAS_FIELDS["internal_notes"]: notes_text,
     }
 
     if is_pf:
-        fields["Nome artístico"] = display_name or prepared.party.display_name
+        fields[PESSOAS_FIELDS["stage_name"]] = display_name or prepared.party.display_name
     else:
-        fields["Nome fantasia"] = display_name or prepared.party.display_name
+        fields[PESSOAS_FIELDS["trade_name"]] = display_name or prepared.party.display_name
 
     return _clean_fields(fields)
 
@@ -338,7 +373,7 @@ def _find_existing_airtable_record(
     email_primary = _normalized_text(prepared.contact.email_primary)
     if email_primary:
         lowered_email = _escape_airtable_formula_value(email_primary.lower())
-        formula = f"LOWER({{E-mail principal}})='{lowered_email}'"
+        formula = f"LOWER({{{PESSOAS_FIELDS['email']}}})='{lowered_email}'"
         record = _find_airtable_record_by_formula(table_url=table_url, formula=formula)
         if record:
             return record, "email_primary"

@@ -26,6 +26,7 @@ create table if not exists public.people_registry_records (
     airtable_base_id text null,
     airtable_table_name text null,
     airtable_record_id text null,
+    edit_token uuid not null default gen_random_uuid(),
     created_at timestamptz not null default timezone('utc', now()),
     updated_at timestamptz not null default timezone('utc', now())
 );
@@ -44,3 +45,17 @@ create index if not exists idx_people_registry_records_email
 
 create index if not exists idx_people_registry_records_airtable_status
     on public.people_registry_records (airtable_sync_status);
+
+create unique index if not exists people_registry_records_edit_token_idx
+    on public.people_registry_records (edit_token);
+
+-- O browser nunca acessa registros de pessoas diretamente. Formulários
+-- públicos e dashboards passam por APIs server-side com service_role.
+alter table public.people_registry_records enable row level security;
+
+revoke all privileges on table public.people_registry_records
+    from anon, authenticated;
+
+grant select, insert, update, delete
+    on table public.people_registry_records
+    to service_role;
