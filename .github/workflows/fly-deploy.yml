@@ -16,12 +16,19 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install backend dependencies
-        run: python -m pip install -r requirements.txt
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install pytest
       - name: Validate backend runtime imports
         run: python -c "import app.main"
         env:
           SUPABASE_URL: https://example.supabase.co
           SUPABASE_SERVICE_ROLE_KEY: ci-import-check
+      - name: Run backend test suite
+        run: python -m pytest tests/ -v
+        env:
+          SUPABASE_URL: https://example.supabase.co
+          SUPABASE_SERVICE_ROLE_KEY: ci-test-service-role
       - uses: superfly/flyctl-actions/setup-flyctl@master
       - name: Sync Airtable API token
         run: |
