@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import logging
+import os
 import traceback
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from app.modules.admin_config import router as admin_config_router
 from app.modules.ai_gateway import router as ai_gateway_router
@@ -68,3 +70,23 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "sunbeat-api"}
+
+
+# ---------------------------------------------------------------------------
+# Front novo da Sunbeat (SPA React) servido na mesma origem da API.
+# O build do Vite vive em app/static (gerado a partir do repo do front).
+# Rotas da API têm precedência por serem registradas antes do catch-all.
+# ---------------------------------------------------------------------------
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+
+if os.path.isdir(STATIC_DIR):
+    assets_dir = os.path.join(STATIC_DIR, "assets")
+    if os.path.isdir(assets_dir):
+        app.mount("/assets", StaticFiles(directory=assets_dir), name="static-assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        candidate = os.path.normpath(os.path.join(STATIC_DIR, full_path))
+        if full_path and candidate.startswith(STATIC_DIR) and os.path.isfile(candidate):
+            return FileResponse(candidate)
+        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
