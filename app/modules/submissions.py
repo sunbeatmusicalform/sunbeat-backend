@@ -2150,6 +2150,7 @@ def _sync_airtable(
     )
 
     focus_track_record_id: Optional[str] = None
+    focus_track_name: Optional[str] = None
     active_track_inputs = {
         str(track.get("client_track_id") or "").strip(): track
         for track in airtable_tracks_input
@@ -2162,16 +2163,26 @@ def _sync_airtable(
         client_track_id = str(airtable_track.get("client_track_id") or "").strip()
         if active_track_inputs.get(client_track_id, {}).get("is_focus_track"):
             focus_track_record_id = airtable_track["id"]
+            focus_track_name = str(
+                active_track_inputs.get(client_track_id, {}).get("title") or ""
+            ).strip() or None
             break
 
     if not focus_track_record_id and active_airtable_tracks:
         focus_track_record_id = active_airtable_tracks[0]["id"]
+        first_client_track_id = str(
+            active_airtable_tracks[0].get("client_track_id") or ""
+        ).strip()
+        focus_track_name = str(
+            active_track_inputs.get(first_client_track_id, {}).get("title") or ""
+        ).strip() or None
 
     if focus_track_record_id:
         try:
             update_airtable_project_focus_track(
                 airtable_project_id=airtable_project["id"],
                 airtable_focus_track_id=focus_track_record_id,
+                focus_track_name=focus_track_name,
             )
         except Exception:
             logger.exception("Focus track sync failed")

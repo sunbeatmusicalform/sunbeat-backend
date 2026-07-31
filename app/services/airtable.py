@@ -686,15 +686,28 @@ def update_airtable_project_focus_track(
     *,
     airtable_project_id: str,
     airtable_focus_track_id: str,
+    focus_track_name: str | None = None,
 ) -> Dict[str, Any]:
     table_name = _projects_table_name()
     focus_track_field = _project_focus_track_field()
 
-    payload = {
-        "fields": {
-            focus_track_field: [airtable_focus_track_id],
-        }
-    }
-
     url = f"{_table_url(table_name)}/{airtable_project_id}"
-    return _request_json("PATCH", url, payload)
+    # A base operacional atual usa texto simples em "Faixa Foco"; bases
+    # antigas podem manter esse campo como vínculo para a tabela de faixas.
+    # Tenta o formato textual primeiro e preserva compatibilidade com ambas.
+    if focus_track_name:
+        try:
+            return _request_json(
+                "PATCH",
+                url,
+                {"fields": {focus_track_field: focus_track_name}},
+            )
+        except RuntimeError as exc:
+            if "INVALID_VALUE_FOR_COLUMN" not in str(exc):
+                raise
+
+    return _request_json(
+        "PATCH",
+        url,
+        {"fields": {focus_track_field: [airtable_focus_track_id]}},
+    )
