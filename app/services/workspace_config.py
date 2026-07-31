@@ -391,3 +391,56 @@ def get_email_event_config(
         return {"recipients": [], "enabled": False}
     except Exception:
         return {"recipients": [], "enabled": False}
+
+
+def get_email_template_config(
+    workspace_slug: str,
+    workflow_type: str,
+    event: str,
+    *,
+    variant: Optional[str] = None,
+) -> Dict[str, str]:
+    """Retorna subject/body customizados para um evento, sem alterar defaults."""
+    try:
+        email_extra = get_email_extra_config(workspace_slug, workflow_type)
+        templates: Dict[str, Any] = email_extra.get("templates") or {}
+        variant_templates: Dict[str, Any] = email_extra.get("variant_templates") or {}
+
+        if variant and variant in variant_templates:
+            cfg = (variant_templates.get(variant) or {}).get(event) or {}
+            if cfg:
+                return {
+                    "subject": str(cfg.get("subject") or "").strip(),
+                    "body": str(cfg.get("body") or "").strip(),
+                }
+
+        cfg = templates.get(event) or {}
+        return {
+            "subject": str(cfg.get("subject") or "").strip(),
+            "body": str(cfg.get("body") or "").strip(),
+        }
+    except Exception:
+        return {"subject": "", "body": ""}
+
+
+def is_email_event_enabled(
+    workspace_slug: str,
+    workflow_type: str,
+    event: str,
+    *,
+    variant: Optional[str] = None,
+    legacy_default: bool = True,
+) -> bool:
+    """Resolve o toggle sem desligar tenants que ainda não persistiram o evento."""
+    try:
+        email_extra = get_email_extra_config(workspace_slug, workflow_type)
+        if variant:
+            variant_event = ((email_extra.get("variants") or {}).get(variant) or {}).get(event)
+            if isinstance(variant_event, dict):
+                return bool(variant_event.get("enabled", True))
+        event_config = (email_extra.get("events") or {}).get(event)
+        if isinstance(event_config, dict):
+            return bool(event_config.get("enabled", True))
+        return legacy_default
+    except Exception:
+        return legacy_default

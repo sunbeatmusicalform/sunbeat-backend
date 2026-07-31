@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import logging
+import re
 from html import escape
 from typing import Any, Dict, Iterable, List, Optional
 
 import requests
 
 from app.core.config import settings
-from app.services.workspace_config import get_email_extra_config, get_email_event_config
+from app.services.workspace_config import (
+    get_email_extra_config,
+    get_email_event_config,
+    get_email_template_config,
+    is_email_event_enabled,
+)
 
 logger = logging.getLogger("sunbeat.email")
+
+_TEMPLATE_TOKEN_RE = re.compile(r"{{\s*([a-zA-Z0-9_]+)\s*}}")
 
 
 def _normalize_recipients(value: str | Iterable[str]) -> List[str]:
@@ -29,6 +37,56 @@ def _normalize_recipients(value: str | Iterable[str]) -> List[str]:
         unique.append(normalized)
 
     return unique
+
+
+def _merge_recipients(
+    *groups: Optional[Iterable[str]],
+    exclude: Optional[Iterable[str]] = None,
+) -> List[str]:
+    excluded = set(_normalize_recipients(exclude or []))
+    merged: List[str] = []
+    for group in groups:
+        merged.extend(list(group or []))
+    return [address for address in _normalize_recipients(merged) if address not in excluded]
+
+
+def render_email_template(template: str, context: Dict[str, Any]) -> str:
+    """Renderiza placeholders conhecidos escapando todo valor vindo do formulário."""
+    safe_context = {
+        str(key): escape(str(value if value is not None else ""), quote=True)
+        for key, value in context.items()
+    }
+    return _TEMPLATE_TOKEN_RE.sub(
+        lambda match: safe_context.get(match.group(1), match.group(0)),
+        str(template or ""),
+    )
+
+
+def _customize_email(
+    *,
+    workspace_slug: str,
+    workflow_type: str,
+    event: str,
+    default_subject: str,
+    default_html: str,
+    context: Dict[str, Any],
+    variant: Optional[str] = None,
+) -> tuple[str, str]:
+    template = get_email_template_config(
+        workspace_slug,
+        workflow_type,
+        event,
+        variant=variant,
+    )
+    subject_template = template.get("subject") or ""
+    body_template = template.get("body") or ""
+    subject = (
+        render_email_template(subject_template, context).replace("\r", " ").replace("\n", " ")
+        if subject_template
+        else default_subject
+    )
+    html = render_email_template(body_template, context) if body_template else default_html
+    return subject, html
 
 
 def _extract_provider_message_id(
@@ -223,14 +281,32 @@ def send_edit_link_email(
 
     # Resolver destinatarios internos via extra_settings.email.events (v2) com fallback v1
     _wf = workflow_type or "release_intake"
+    if not is_email_event_enabled(
+        workspace_slug,
+        _wf,
+        event,
+        variant=variant,
+        legacy_default=True,
+    ):
+        return {
+            "status": "disabled",
+            "skipped": True,
+            "subject": None,
+            "edit_url": None,
+            "to_email": to_email,
+        }
     _email_extra = get_email_extra_config(workspace_slug, _wf)
     _ev_cfg = get_email_event_config(workspace_slug, _wf, event, variant=variant)
     # v2: per-event recipients; fallback v1: cc_addresses global
-    _cc = (_ev_cfg.get("recipients") or None) or (_email_extra.get("cc_addresses") or None)
-    _bcc = _email_extra.get("bcc_addresses") or None
-    # on_edit desabilitado por config: nao envia CC (mas envia email ao submitter)
-    if not _ev_cfg.get("enabled", True) and _ev_cfg.get("recipients") == []:
-        _cc = None
+    _cc = _merge_recipients(
+        _ev_cfg.get("recipients") or [],
+        _email_extra.get("cc_addresses") or [],
+        exclude=[to_email],
+    ) or None
+    _bcc = _merge_recipients(
+        _email_extra.get("bcc_addresses") or [],
+        exclude=[to_email, *(_cc or [])],
+    ) or None
 
     edit_url = build_edit_url(
         edit_token=edit_token,
@@ -249,6 +325,22 @@ def send_edit_link_email(
         if recipient_name
         else "Ola!"
     )
+    template_context = {
+        "submitter_name": recipient_name or "",
+        "submitter_email": to_email,
+        "project_title": safe_project_title,
+        "release_date": release_date or "",
+        "release_type": "",
+        "genre": "",
+        "primary_artist": primary_artist or "",
+        "draft_link": "",
+        "edit_link": edit_url,
+        "workspace_name": workspace_slug.replace("-", " ").title(),
+        "current_step": "",
+        "tracks_count": "",
+        "focus_track": "",
+        "track_titles": "",
+    }
 
     # -- rights_clearance --
     if workflow_type == "rights_clearance":
@@ -271,6 +363,15 @@ def send_edit_link_email(
         </p>
         <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
             """
+        )
+        subject, html = _customize_email(
+            workspace_slug=workspace_slug,
+            workflow_type=_wf,
+            event=event,
+            default_subject=subject,
+            default_html=html,
+            context=template_context,
+            variant=variant,
         )
         return _post_resend(
             to_email=to_email,
@@ -300,6 +401,15 @@ def send_edit_link_email(
         </p>
         <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
             """
+        )
+        subject, html = _customize_email(
+            workspace_slug=workspace_slug,
+            workflow_type=_wf,
+            event=event,
+            default_subject=subject,
+            default_html=html,
+            context=template_context,
+            variant=variant,
         )
         return _post_resend(
             to_email=to_email,
@@ -347,6 +457,16 @@ def send_edit_link_email(
         </p>
         <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
         """
+    )
+
+    subject, html = _customize_email(
+        workspace_slug=workspace_slug,
+        workflow_type=_wf,
+        event=event,
+        default_subject=subject,
+        default_html=html,
+        context=template_context,
+        variant=variant,
     )
 
     return _post_resend(
@@ -411,12 +531,45 @@ def send_draft_link_email(
     _draft_ev = get_email_event_config(
         workspace_slug, workflow_type or "release_intake", "on_draft"
     )
-    _draft_cc = _draft_ev.get("recipients") or None
+    _draft_extra = get_email_extra_config(workspace_slug, workflow_type or "release_intake")
+    _draft_cc = _merge_recipients(
+        _draft_ev.get("recipients") or [],
+        _draft_extra.get("cc_addresses") or [],
+        exclude=[to_email],
+    ) or None
+    _draft_bcc = _merge_recipients(
+        _draft_extra.get("bcc_addresses") or [],
+        exclude=[to_email, *(_draft_cc or [])],
+    ) or None
+    subject, html = _customize_email(
+        workspace_slug=workspace_slug,
+        workflow_type=workflow_type or "release_intake",
+        event="on_draft",
+        default_subject=subject,
+        default_html=html,
+        context={
+            "submitter_name": recipient_name or "",
+            "submitter_email": to_email,
+            "project_title": project_title or "",
+            "release_date": "",
+            "release_type": "",
+            "genre": "",
+            "primary_artist": "",
+            "draft_link": draft_url,
+            "edit_link": "",
+            "workspace_name": workspace_slug.replace("-", " ").title(),
+            "current_step": "",
+            "tracks_count": "",
+            "focus_track": "",
+            "track_titles": "",
+        },
+    )
     return _post_resend(
         to_email=to_email,
         subject=subject,
         html=html,
         cc=_draft_cc,
+        bcc=_draft_bcc,
     )
 
 
@@ -555,10 +708,42 @@ def send_first_stage_completion_email(
         """
     )
 
+    subject, html = _customize_email(
+        workspace_slug=workspace_slug,
+        workflow_type="release_intake",
+        event="on_first_stage",
+        default_subject=subject,
+        default_html=html,
+        context={
+            "submitter_name": submitter_name or "",
+            "submitter_email": submitter_email,
+            "project_title": project_title or "",
+            "release_date": "",
+            "release_type": "",
+            "genre": "",
+            "primary_artist": "",
+            "draft_link": draft_url,
+            "edit_link": "",
+            "workspace_name": workspace_name,
+            "current_step": current_step or "",
+            "tracks_count": "",
+            "focus_track": "",
+            "track_titles": "",
+        },
+    )
+    email_extra = get_email_extra_config(workspace_slug, "release_intake")
+    cc = _merge_recipients(email_extra.get("cc_addresses") or [], exclude=recipients) or None
+    bcc = _merge_recipients(
+        email_extra.get("bcc_addresses") or [],
+        exclude=[*recipients, *(cc or [])],
+    ) or None
+
     result = _post_resend(
         to_email=recipients,
         subject=subject,
         html=html,
+        cc=cc,
+        bcc=bcc,
         idempotency_key=idempotency_key,
     )
     status = (
@@ -582,6 +767,7 @@ def send_submission_summary_email(
     focus_track_name: Optional[str],
     track_titles: Iterable[str],
     edit_url: str,
+    workspace_slug: str = "atabaque",
     idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     recipients = _normalize_recipients(to_emails)
@@ -597,10 +783,14 @@ def send_submission_summary_email(
     safe_genre = escape(genre or "Nao informado")
     safe_focus_track_name = escape(focus_track_name or "Nao definida")
 
-    track_items = [
-        f"<li>{escape(track_title)}</li>"
+    track_title_list = [
+        str(track_title).strip()
         for track_title in track_titles
         if str(track_title).strip()
+    ]
+    track_items = [
+        f"<li>{escape(track_title)}</li>"
+        for track_title in track_title_list
     ]
     tracks_html = "".join(track_items) if track_items else "<li>Nenhuma faixa informada</li>"
 
@@ -636,9 +826,41 @@ def send_submission_summary_email(
         """
     )
 
+    subject, html = _customize_email(
+        workspace_slug=workspace_slug,
+        workflow_type="release_intake",
+        event="on_summary",
+        default_subject=subject,
+        default_html=html,
+        context={
+            "submitter_name": submitter_name or "",
+            "submitter_email": submitter_email,
+            "project_title": project_title or "",
+            "release_date": release_date or "",
+            "release_type": release_type or "",
+            "genre": genre or "",
+            "primary_artist": "",
+            "draft_link": "",
+            "edit_link": edit_url,
+            "workspace_name": workspace_name,
+            "current_step": "",
+            "tracks_count": len(track_title_list),
+            "focus_track": focus_track_name or "",
+            "track_titles": ", ".join(track_title_list),
+        },
+    )
+    email_extra = get_email_extra_config(workspace_slug, "release_intake")
+    cc = _merge_recipients(email_extra.get("cc_addresses") or [], exclude=recipients) or None
+    bcc = _merge_recipients(
+        email_extra.get("bcc_addresses") or [],
+        exclude=[*recipients, *(cc or [])],
+    ) or None
+
     return _post_resend(
         to_email=recipients,
         subject=subject,
         html=html,
+        cc=cc,
+        bcc=bcc,
         idempotency_key=idempotency_key,
     )

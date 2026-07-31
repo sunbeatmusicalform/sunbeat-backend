@@ -34,7 +34,11 @@ from app.services.airtable import (
 from app.services.airtable_company_registry import sync_company_registry_to_airtable, update_company_registry_in_airtable
 from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable, update_rights_clearance_case_in_airtable
 from app.services.email import send_edit_link_email, send_submission_summary_email
-from app.services.workspace_config import get_workflow_settings, get_email_event_config
+from app.services.workspace_config import (
+    get_workflow_settings,
+    get_email_event_config,
+    is_email_event_enabled,
+)
 from app.services.google_drive import sync_clearance_to_google_drive, sync_submission_to_google_drive
 
 logger = logging.getLogger("sunbeat.submissions")
@@ -1852,6 +1856,17 @@ def _maybe_send_submission_summary_email(
             "recipients_count": recipients_count,
         }
 
+    if not is_email_event_enabled(
+        validated_payload.workspace_slug,
+        _summary_wf,
+        "on_summary",
+        legacy_default=True,
+    ):
+        return {
+            "status": "disabled",
+            "recipients_count": recipients_count,
+        }
+
     if not notification_emails:
         return {
             "status": "skipped",
@@ -1881,6 +1896,7 @@ def _maybe_send_submission_summary_email(
             focus_track_name=_get_focus_track_name(validated_payload),
             track_titles=[track.title for track in validated_payload.tracks],
             edit_url=edit_url,
+            workspace_slug=validated_payload.workspace_slug,
             idempotency_key=f"{submission_id}:summary",
         )
         provider_message_id = email_result.get("provider_message_id")
@@ -2757,6 +2773,20 @@ def create_submission(
         _update_submission_email_skipped(submission_id, "post_submit_email_enabled=false")
         logger.info(
             "Post-submit email skipped by workspace config submission_id=%s workspace=%s workflow=%s",
+            submission_id,
+            validated_payload.workspace_slug,
+            _wf_type,
+        )
+    elif not is_email_event_enabled(
+        validated_payload.workspace_slug,
+        _wf_type,
+        "on_submit",
+        legacy_default=True,
+    ):
+        email_status = "skipped_config"
+        _update_submission_email_skipped(submission_id, "email.events.on_submit.enabled=false")
+        logger.info(
+            "Post-submit email skipped by event config submission_id=%s workspace=%s workflow=%s",
             submission_id,
             validated_payload.workspace_slug,
             _wf_type,

@@ -36,6 +36,8 @@ def _load_email_service() -> types.ModuleType:
         "app.services.workspace_config": types.SimpleNamespace(
             get_email_extra_config=lambda *_args, **_kwargs: {},
             get_email_event_config=lambda *_args, **_kwargs: {"enabled": True},
+            get_email_template_config=lambda *_args, **_kwargs: {"subject": "", "body": ""},
+            is_email_event_enabled=lambda *_args, **_kwargs: True,
         ),
         "app.modules.workflow_registry": types.SimpleNamespace(
             build_frontend_workflow_path=_build_frontend_workflow_path,

@@ -15,6 +15,7 @@ from app.core.database import supabase
 from app.modules.admin_config import router as admin_config_router
 from app.modules.ai_gateway import router as ai_gateway_router
 from app.modules.drive_config import router as drive_config_router
+from app.modules.email_config import router as email_config_router
 from app.modules.people_registry import router as people_registry_router
 from app.modules.portal_branding import router as portal_branding_router
 from app.modules.portal_session import router as portal_session_router
@@ -54,6 +55,7 @@ app.add_middleware(
 app.include_router(admin_config_router)
 app.include_router(drafts_router)
 app.include_router(drive_config_router)
+app.include_router(email_config_router)
 app.include_router(people_registry_router)
 app.include_router(portal_branding_router)
 app.include_router(portal_session_router)

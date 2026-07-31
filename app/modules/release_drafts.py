@@ -10,7 +10,11 @@ from fastapi import APIRouter, HTTPException
 
 from app.core.database import supabase
 from app.modules.submissions import _load_workspace_email_settings
-from app.services.workspace_config import get_email_event_config, get_email_extra_config
+from app.services.workspace_config import (
+    get_email_event_config,
+    get_email_extra_config,
+    is_email_event_enabled,
+)
 from app.modules.workflow_registry import (
     build_workflow_source,
     normalize_workflow_type,
@@ -518,6 +522,19 @@ async def send_draft_link(payload: Dict[str, Any]) -> Dict[str, Any]:
     workflow_type = normalize_workflow_type(
         payload.get("workflow_type") or meta.get("workflow_type")
     )
+    if not is_email_event_enabled(
+        workspace_slug,
+        workflow_type,
+        "on_draft",
+        legacy_default=True,
+    ):
+        return {
+            "ok": True,
+            "disabled": True,
+            "message": "Draft link email disabled by workspace configuration",
+            "draft_token": draft_token,
+            "draft_link_email_sent": False,
+        }
     if meta.get("draft_link_email_sent"):
         return {
             "ok": True,
