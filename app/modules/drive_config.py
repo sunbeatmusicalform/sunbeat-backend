@@ -22,12 +22,25 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from app.core.admin_auth import _admin_token_is_valid
 from app.core.database import supabase
 from app.modules.admin_config import _read_raw_row, _require_admin_token
+from app.modules.portal_session import require_portal_session
 from app.services.workspace_config import get_workflow_operational_base
+
+
+async def _require_admin_or_portal(
+    workspace_slug: str,
+    x_admin_token: Optional[str] = Header(default=None),
+    x_portal_token: Optional[str] = Header(default=None),
+) -> None:
+    """Admin token OU sessão do portal do workspace — 401 caso nenhum valide."""
+    if x_admin_token and _admin_token_is_valid(x_admin_token.strip()):
+        return
+    require_portal_session(workspace_slug, x_portal_token)
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +151,7 @@ def _resolve(workspace_slug: str, workflow_type: str) -> Dict[str, Any]:
 async def get_drive_config(
     workspace_slug: str,
     workflow_type: str,
-    _: None = Depends(_require_admin_token),
+    _: None = Depends(_require_admin_or_portal),
 ) -> Dict[str, Any]:
     """Visão efetiva da configuração de Drive do workflow (db + defaults)."""
     wf = _normalize_slug(workflow_type)
@@ -152,7 +165,7 @@ async def patch_drive_config(
     workspace_slug: str,
     workflow_type: str,
     body: DriveConfigPatch,
-    _: None = Depends(_require_admin_token),
+    _: None = Depends(_require_admin_or_portal),
 ) -> Dict[str, Any]:
     """Deep-merge no bloco extra_settings.drive. Campos omitidos não são gravados."""
     wf = _normalize_slug(workflow_type)

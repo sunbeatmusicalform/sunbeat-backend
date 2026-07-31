@@ -67,6 +67,7 @@ class Settings(BaseSettings):
 
     # API interna — admin manual e futura Setup AI
     INTERNAL_ADMIN_TOKEN: str | None = Field(default=None)
+    PORTAL_PASS_SHA256: str | None = Field(default=None)
 
 
 settings = Settings()
