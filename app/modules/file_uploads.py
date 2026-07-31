@@ -8,6 +8,8 @@ from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.database import supabase
@@ -75,29 +77,39 @@ def _encoded_path(path: str) -> str:
     return "/".join(quote(part, safe="") for part in path.split("/") if part)
 
 
-@router.post("/uploads")
-async def upload_file(
-    request: Request,
-    file: UploadFile = File(...),
-    kind: UploadKind = Form(...),
-    workspace_slug: str = Form(...),
-    draft_token: str = Form(...),
-    track_local_id: str = Form(""),
-) -> dict:
-    rules = UPLOAD_RULES[kind]
-    file_name = _safe_file_name(file.filename or "arquivo")
-    extension = PurePosixPath(file_name).suffix.lower()
-    mime_type = (file.content_type or "").lower()
+class SignedUploadRequest(BaseModel):
+    kind: UploadKind
+    file_name: str
+    mime_type: str = ""
+    file_size: int = 0
+    workspace_slug: str
+    draft_token: str
+    track_local_id: str = ""
 
+
+def _validate_upload_metadata(kind: UploadKind, file_name: str, mime_type: str, file_size: int) -> tuple[dict, str]:
+    rules = UPLOAD_RULES[kind]
+    safe_name = _safe_file_name(file_name)
+    extension = PurePosixPath(safe_name).suffix.lower()
+    normalized_mime = mime_type.lower()
     if extension not in rules["extensions"]:
         raise HTTPException(status_code=400, detail="Formato de arquivo não permitido.")
-    if mime_type and mime_type not in rules["mime_types"]:
+    if normalized_mime and normalized_mime not in rules["mime_types"]:
         raise HTTPException(status_code=400, detail="Tipo MIME não permitido.")
-
-    content = await file.read(int(rules["max_size"]) + 1)
-    if len(content) > int(rules["max_size"]):
+    if file_size < 0 or file_size > int(rules["max_size"]):
         raise HTTPException(status_code=413, detail="Arquivo excede o limite permitido.")
+    return rules, safe_name
 
+
+def _storage_path_for(
+    *,
+    kind: UploadKind,
+    file_name: str,
+    workspace_slug: str,
+    draft_token: str,
+    track_local_id: str,
+) -> str:
+    rules = UPLOAD_RULES[kind]
     path_parts = [
         _safe_segment(workspace_slug),
         "drafts",
@@ -107,11 +119,87 @@ async def upload_file(
     if kind == "audio" and track_local_id:
         path_parts.append(_safe_segment(track_local_id))
     path_parts.append(f"{int(time.time() * 1000)}-{file_name}")
-    storage_path = "/".join(path_parts)
+    return "/".join(path_parts)
+
+
+def _file_ref(request: Request, *, bucket: str, storage_path: str, file_name: str, mime_type: str, file_size: int) -> dict:
+    origin = str(request.base_url).rstrip("/")
+    encoded = _encoded_path(storage_path)
+    return {
+        "file_name": file_name,
+        "storage_bucket": bucket,
+        "storage_path": storage_path,
+        "public_url": f"{origin}/files/{quote(bucket, safe='')}/{encoded}",
+        "download_url": f"{origin}/files/{quote(bucket, safe='')}/download/{encoded}",
+        "mime_type": mime_type or "application/octet-stream",
+        "size_bytes": file_size,
+    }
+
+
+@router.post("/uploads/sign")
+async def sign_upload(request: Request, payload: SignedUploadRequest) -> dict:
+    _, file_name = _validate_upload_metadata(
+        payload.kind, payload.file_name, payload.mime_type, payload.file_size
+    )
+    storage_path = _storage_path_for(
+        kind=payload.kind,
+        file_name=file_name,
+        workspace_slug=payload.workspace_slug,
+        draft_token=payload.draft_token,
+        track_local_id=payload.track_local_id,
+    )
+    bucket = _bucket_for(payload.kind)
+    try:
+        signed = await run_in_threadpool(
+            supabase.storage.from_(bucket).create_signed_upload_url,
+            storage_path,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Falha ao preparar upload: {exc}") from exc
+    return {
+        "ok": True,
+        "signed_upload_url": signed["signed_url"],
+        "file": _file_ref(
+            request,
+            bucket=bucket,
+            storage_path=storage_path,
+            file_name=payload.file_name,
+            mime_type=payload.mime_type,
+            file_size=payload.file_size,
+        ),
+    }
+
+
+@router.post("/uploads")
+async def upload_file(
+    request: Request,
+    file: UploadFile = File(...),
+    kind: UploadKind = Form(...),
+    workspace_slug: str = Form(...),
+    draft_token: str = Form(...),
+    track_local_id: str = Form(""),
+) -> dict:
+    rules, file_name = _validate_upload_metadata(
+        kind, file.filename or "arquivo", file.content_type or "", 0
+    )
+    mime_type = (file.content_type or "").lower()
+
+    content = await file.read(int(rules["max_size"]) + 1)
+    if len(content) > int(rules["max_size"]):
+        raise HTTPException(status_code=413, detail="Arquivo excede o limite permitido.")
+
+    storage_path = _storage_path_for(
+        kind=kind,
+        file_name=file_name,
+        workspace_slug=workspace_slug,
+        draft_token=draft_token,
+        track_local_id=track_local_id,
+    )
     bucket = _bucket_for(kind)
 
     try:
-        supabase.storage.from_(bucket).upload(
+        await run_in_threadpool(
+            supabase.storage.from_(bucket).upload,
             storage_path,
             content,
             {"content-type": mime_type or "application/octet-stream", "upsert": "false"},
@@ -119,17 +207,16 @@ async def upload_file(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Falha ao armazenar arquivo: {exc}") from exc
 
-    origin = str(request.base_url).rstrip("/")
-    encoded = _encoded_path(storage_path)
     return {
         "ok": True,
-        "file_name": file.filename or file_name,
-        "storage_bucket": bucket,
-        "storage_path": storage_path,
-        "public_url": f"{origin}/files/{quote(bucket, safe='')}/{encoded}",
-        "download_url": f"{origin}/files/{quote(bucket, safe='')}/download/{encoded}",
-        "mime_type": mime_type or "application/octet-stream",
-        "size_bytes": len(content),
+        **_file_ref(
+            request,
+            bucket=bucket,
+            storage_path=storage_path,
+            file_name=file.filename or file_name,
+            mime_type=mime_type,
+            file_size=len(content),
+        ),
     }
 
 
