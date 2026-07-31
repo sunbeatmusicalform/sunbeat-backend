@@ -29,6 +29,14 @@ class SubmissionSchemaTests(unittest.TestCase):
                         "order_number": 1,
                         "title": "Faixa 1",
                         "primary_artists": "Ana",
+                        "primary_artist_refs": [
+                            {
+                                "id": "person-ana",
+                                "name": "Ana",
+                                "status": "registered",
+                                "source": "people_registry",
+                            }
+                        ],
                         "authors": "Ana",
                     }
                 ],
@@ -46,6 +54,10 @@ class SubmissionSchemaTests(unittest.TestCase):
         self.assertEqual(
             dumped["tracks"][0]["client_track_id"],
             "b284c498-58be-4a1f-b796-a7548f54e83d",
+        )
+        self.assertEqual(
+            dumped["tracks"][0]["primary_artist_refs"][0]["id"],
+            "person-ana",
         )
 
 

@@ -68,6 +68,7 @@ class TrackPayload(BaseModel):
     title: str = Field(..., min_length=1)
     is_focus_track: Optional[bool] = False
     primary_artists: str = Field(..., min_length=1)
+    primary_artist_refs: Optional[List[Dict[str, Any]]] = None
     featured_artists: Optional[str] = None
     interpreters: Optional[str] = None
     authors: str = Field(..., min_length=1)

@@ -22,15 +22,15 @@ UploadKind = Literal["cover", "audio", "asset"]
 UPLOAD_RULES = {
     "cover": {
         "folder": "cover",
-        "max_size": 50 * 1024 * 1024,
-        "extensions": {".jpg", ".jpeg", ".png"},
-        "mime_types": {"image/jpeg", "image/png"},
+        "max_size": 100 * 1024 * 1024,
+        "extensions": {".jpg", ".jpeg", ".png", ".tif", ".tiff"},
+        "mime_types": {"image/jpeg", "image/png", "image/tiff", "image/x-tiff"},
     },
     "audio": {
         "folder": "audio",
         "max_size": 100 * 1024 * 1024,
-        "extensions": {".wav", ".mp3"},
-        "mime_types": {"audio/wav", "audio/x-wav", "audio/mpeg", "audio/mp3"},
+        "extensions": {".wav", ".flac"},
+        "mime_types": {"audio/wav", "audio/x-wav", "audio/flac", "audio/x-flac"},
     },
     "asset": {
         "folder": "assets",
