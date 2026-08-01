@@ -223,6 +223,34 @@ RIGHTS_CLEARANCE_FIELDS["requester_email"].update({
     "lock_reason": "Necessário para retorno, rascunhos e atualizações do pedido.",
 })
 
+
+def _protect_fields(fields: Dict[str, Dict[str, Any]], keys: list[str], reason: str) -> None:
+    for key in keys:
+        fields[key].update({"locked": True, "lock_reason": reason})
+
+
+_protect_fields(RELEASE_INTAKE_FIELDS, [
+    "responsibleName", "responsibleEmail", "projectName", "releaseType", "releaseDate",
+    "track.title", "track.mainArtists", "track.composers",
+], "Exigido pelo contrato operacional deste workflow.")
+_protect_fields(RIGHTS_CLEARANCE_FIELDS, [
+    "requester_name", "requester_email", "requester_company", "requester_role", "clearance_format",
+    "project_title", "responsible_company", "client_or_distributor", "release_or_start_date",
+    "release_type", "general_clearance_notes", "tracks", "tracks.title", "tracks.primary_artists",
+    "tracks.authors", "tracks.phonogram_owner", "music_title", "artist_name", "phonogram_owner",
+    "composer_author_info", "publisher_info", "material_type", "intended_use", "exclusivity",
+    "territory", "licensing_period", "audiovisual_type", "director_name",
+    "product_or_campaign_name", "scene_description", "sync_duration", "media_channels",
+], "Exigido pelo formato selecionado e pelo contrato de clearance.")
+_protect_fields(PEOPLE_REGISTRY_FIELDS, [
+    "party_kind", "display_name", "display_name_pj", "legal_name", "legal_name_pj", "roles",
+], "Exigido para identificar e deduplicar o cadastro.")
+_protect_fields(COMPANY_REGISTRY_FIELDS, [
+    "document_type", "document_number", "fantasy_name", "legal_name", "address", "city", "state", "zip_code",
+    "legalrep_name", "legalrep_phone", "legalrep_email", "contract_same_as_legal",
+    "financial_same_as_legal", "financial_same_as_contract", "bank_name", "agency", "account", "account_type",
+], "Exigido para cadastro contratual ou financeiro da empresa.")
+
 WORKFLOW_CATALOGS: Dict[str, tuple[Dict[str, Dict[str, Any]], Dict[str, str]]] = {
     "release_intake": (RELEASE_INTAKE_FIELDS, RELEASE_INTAKE_STEPS),
     "rights_clearance": (RIGHTS_CLEARANCE_FIELDS, RIGHTS_CLEARANCE_STEPS),
@@ -287,6 +315,8 @@ def _resolve(workspace_slug: str, workflow_type: str) -> Dict[str, Any]:
         if isinstance(override, dict):
             for name in ("visible", "requirement", "label", "hint", "placeholder"):
                 if name in override and override[name] is not None:
+                    if resolved["locked"] and name in {"visible", "requirement"}:
+                        continue
                     resolved[name] = override[name]
         resolved["key"] = key
         resolved["_origin"] = "db" if isinstance(override, dict) else "default"

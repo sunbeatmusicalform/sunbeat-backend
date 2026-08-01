@@ -82,6 +82,18 @@ class FormConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(field["label"], "Histórico do projeto")
         self.assertEqual(field["_origin"], "db")
 
+    def test_resolve_ignores_stored_requirement_override_for_protected_field(self):
+        row = {"extra_settings": {"form": {"fields": {
+            "projectName": {"visible": False, "requirement": "optional", "label": "Projeto interno"}
+        }}}}
+        with patch.object(form_config, "_read_raw_row", return_value=row):
+            result = form_config._resolve("atabaque", "release_intake")
+
+        field = result["fields"]["projectName"]
+        self.assertTrue(field["visible"])
+        self.assertEqual(field["requirement"], "on_step")
+        self.assertEqual(field["label"], "Projeto interno")
+
     async def test_patch_preserves_other_extra_settings(self):
         row = {"extra_settings": {"email": {"events": {"on_draft": {"enabled": True}}}}}
         execute = MagicMock(return_value=MagicMock(data=[]))
