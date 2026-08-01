@@ -24,6 +24,11 @@ def _api_key() -> str:
     return settings.GEMINI_LYRICS_API_KEY
 
 
+def _auth_headers() -> Dict[str, str]:
+    # Never put API keys in query strings: HTTP access logs include request URLs.
+    return {"x-goog-api-key": _api_key()}
+
+
 def _base_url() -> str:
     return str(settings.GEMINI_API_BASE_URL or "https://generativelanguage.googleapis.com").rstrip("/")
 
@@ -86,11 +91,11 @@ def _json_response(response: httpx.Response, *, stage: str) -> Dict[str, Any]:
     try:
         payload = response.json()
     except Exception as exc:
-        raise LyricsAlignmentError(f"Gemini returned an invalid response during {stage}") from exc
+        raise LyricsAlignmentError("A IA retornou uma resposta inválida. Tente novamente.") from exc
     if response.status_code >= 400:
-        raise LyricsAlignmentError(f"Gemini rejected the request during {stage}")
+        raise LyricsAlignmentError("A IA não conseguiu processar esta sincronização agora. Tente novamente.")
     if not isinstance(payload, dict):
-        raise LyricsAlignmentError(f"Gemini returned an invalid response during {stage}")
+        raise LyricsAlignmentError("A IA retornou uma resposta inválida. Tente novamente.")
     return payload
 
 
@@ -104,8 +109,8 @@ def _upload_file(
 ) -> Dict[str, Any]:
     init = client.post(
         f"{_base_url()}/upload/v1beta/files",
-        params={"key": _api_key()},
         headers={
+            **_auth_headers(),
             "X-Goog-Upload-Protocol": "resumable",
             "X-Goog-Upload-Command": "start",
             "X-Goog-Upload-Header-Content-Length": str(size_bytes),
@@ -145,7 +150,7 @@ def _wait_until_active(client: httpx.Client, file_payload: Dict[str, Any]) -> Di
         if time.monotonic() >= deadline:
             raise LyricsAlignmentError("Gemini took too long to process the audio")
         time.sleep(1.0)
-        response = client.get(f"{_base_url()}/v1beta/{current['name']}", params={"key": _api_key()})
+        response = client.get(f"{_base_url()}/v1beta/{current['name']}", headers=_auth_headers())
         current = _json_response(response, stage="audio processing")
     if str(current.get("state") or "ACTIVE").upper() not in {"ACTIVE", "STATE_UNSPECIFIED"}:
         raise LyricsAlignmentError("Gemini could not process the audio")
@@ -233,7 +238,7 @@ def align_lyrics_with_gemini(
             uploaded = _wait_until_active(client, uploaded)
             response = client.post(
                 f"{_base_url()}/v1beta/models/{settings.GEMINI_LYRICS_MODEL}:generateContent",
-                params={"key": _api_key()},
+                headers=_auth_headers(),
                 json={
                     "contents": [
                         {
@@ -264,6 +269,6 @@ def align_lyrics_with_gemini(
         finally:
             if uploaded and uploaded.get("name"):
                 try:
-                    client.delete(f"{_base_url()}/v1beta/{uploaded['name']}", params={"key": _api_key()})
+                    client.delete(f"{_base_url()}/v1beta/{uploaded['name']}", headers=_auth_headers())
                 except Exception:
                     pass

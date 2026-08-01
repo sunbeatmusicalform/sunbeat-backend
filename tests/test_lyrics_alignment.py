@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import io
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.modules import lyrics_alignment
-from app.services.lyrics_alignment import _normalize_result
+from app.services.lyrics_alignment import _normalize_result, _upload_file
 
 
 app = FastAPI()
@@ -88,6 +90,25 @@ class LyricsAlignmentTests(unittest.TestCase):
         self.assertEqual(result["lines"][1]["text"], "Refrão aprovado")
         self.assertEqual(result["lines"][1]["status"], "unmatched")
         self.assertTrue(result["lines"][1]["needs_review"])
+
+    def test_api_key_is_sent_in_header_not_query_string(self):
+        fake_client = MagicMock()
+        fake_client.post.side_effect = [
+            httpx.Response(200, headers={"x-goog-upload-url": "https://upload.example/session"}, json={}),
+            httpx.Response(200, json={"file": {"name": "files/abc", "uri": "https://files.example/abc"}}),
+        ]
+
+        _upload_file(
+            fake_client,
+            audio_file=io.BytesIO(b"RIFFtest"),
+            filename="song.wav",
+            mime_type="audio/wav",
+            size_bytes=8,
+        )
+
+        init_call = fake_client.post.call_args_list[0]
+        self.assertNotIn("params", init_call.kwargs)
+        self.assertEqual(init_call.kwargs["headers"]["x-goog-api-key"], "test-key")
 
 
 if __name__ == "__main__":

@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str | None = Field(default=None)
     GEMINI_API_BASE_URL: str = Field(default="https://generativelanguage.googleapis.com")
     GEMINI_LYRICS_API_KEY: str | None = Field(default=None)
-    GEMINI_LYRICS_MODEL: str = Field(default="gemini-2.5-flash")
+    GEMINI_LYRICS_MODEL: str = Field(default="gemini-3-flash-preview")
     GEMINI_LYRICS_TIMEOUT_SECONDS: int = Field(default=180)
     GEMINI_LYRICS_MAX_AUDIO_MB: int = Field(default=250)
     GEMINI_LYRICS_WORKSPACES: str = Field(default="atabaque")
