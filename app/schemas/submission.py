@@ -59,6 +59,18 @@ class ProjectPayload(BaseModel):
     cover_file: Optional[UploadedFileRef] = None
 
 
+class TimedLyricLinePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    text: str
+    start_ms: Optional[int] = None
+    end_ms: Optional[int] = None
+    confidence: Optional[float] = None
+    status: Optional[Literal["timed", "section", "unmatched"]] = None
+    needs_review: Optional[bool] = None
+
+
 class TrackPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -84,6 +96,7 @@ class TrackPayload(BaseModel):
     tiktok_snippet: Optional[str] = None
     audio_file: Optional[UploadedFileRef] = None
     lyrics: Optional[str] = None
+    timed_lyrics: Optional[List[TimedLyricLinePayload]] = None
     track_status: Optional[str] = "draft"
 
 
