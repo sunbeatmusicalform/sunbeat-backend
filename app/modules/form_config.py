@@ -62,6 +62,7 @@ RELEASE_INTAKE_FIELDS: Dict[str, Dict[str, Any]] = {
     "track.isrc": _field("faixas", "Código ISRC", "on_step", placeholder="BR___0000000"),
     "track.producer": _field("faixas", "Produtor fonográfico", "on_step", hint="Pessoa ou estúdio responsável pela gravação.", placeholder="Ex.: Estúdio Pedra Selva"),
     "track.profiles": _field("faixas", "Perfis de artista", hint="Informe perfis a criar e links de perfis existentes."),
+    "track.lyrics": _field("faixas", "Letra da música", hint="Cole a letra completa. Faixas instrumentais podem deixar este campo em branco.", placeholder="Cole aqui a letra completa da música…"),
     "track.audio": _field("faixas", "Áudio da faixa", "on_step", hint="Master em WAV ou FLAC."),
     "focusTrack": _field("faixas", "Faixa foco", "on_step", hint="Marque a faixa que guiará o plano de divulgação."),
     "marketingNumbers": _field("marketing", "Números e resultados relevantes", hint="Shows, streams, audiência, hits, colaborações ou imprensa."),

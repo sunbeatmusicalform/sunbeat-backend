@@ -39,6 +39,7 @@ class FormConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["schema_version"], 1)
         self.assertTrue(result["fields"]["responsibleEmail"]["locked"])
         self.assertEqual(result["fields"]["track.audio"]["requirement"], "on_step")
+        self.assertEqual(result["fields"]["track.lyrics"]["requirement"], "optional")
         self.assertEqual(result["fields"]["marketingNumbers"]["requirement"], "optional")
 
     def test_resolve_uses_workflow_specific_catalogs(self):
