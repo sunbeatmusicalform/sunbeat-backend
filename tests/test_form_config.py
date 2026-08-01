@@ -41,6 +41,25 @@ class FormConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["fields"]["track.audio"]["requirement"], "on_step")
         self.assertEqual(result["fields"]["marketingNumbers"]["requirement"], "optional")
 
+    def test_resolve_uses_workflow_specific_catalogs(self):
+        with patch.object(form_config, "_read_raw_row", return_value=None):
+            clearance = form_config._resolve("atabaque", "rights_clearance")
+            people = form_config._resolve("atabaque", "people_registry")
+            company = form_config._resolve("atabaque", "company_registry")
+
+        self.assertIn("requester_email", clearance["fields"])
+        self.assertIn("tracks.primary_artists", clearance["fields"])
+        self.assertNotIn("responsibleEmail", clearance["fields"])
+        self.assertIn("stage_name", people["fields"])
+        self.assertIn("document_number", company["fields"])
+        self.assertEqual(company["fields"]["consentTruth"]["requirement"], "on_submit")
+        self.assertTrue(clearance["fields"]["requester_email"]["locked"])
+
+    def test_unknown_workflow_has_no_release_catalog_fallback(self):
+        with self.assertRaises(HTTPException) as raised:
+            form_config._resolve("atabaque", "unknown")
+        self.assertEqual(raised.exception.status_code, 404)
+
     def test_resolve_merges_only_supported_overrides(self):
         row = {
             "extra_settings": {

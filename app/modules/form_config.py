@@ -41,7 +41,7 @@ def _field(
     }
 
 
-FORM_FIELDS: Dict[str, Dict[str, Any]] = {
+RELEASE_INTAKE_FIELDS: Dict[str, Dict[str, Any]] = {
     "responsibleName": _field("identificacao", "Seu nome", "on_step", hint="Como você gostaria de ser chamado(a)?", placeholder="Ex.: Marina Duarte"),
     "responsibleEmail": _field("identificacao", "Seu e-mail", "on_step", hint="Usado para rascunhos, confirmações e atualizações.", placeholder="voce@exemplo.com", locked=True, lock_reason="Necessário para identificar o responsável e entregar os links do formulário."),
     "projectName": _field("projeto", "Nome do projeto", "on_step", hint="Título do single, EP ou álbum como deve aparecer nas plataformas.", placeholder="Ex.: Ciranda Elétrica"),
@@ -78,13 +78,164 @@ FORM_FIELDS: Dict[str, Dict[str, Any]] = {
     "consentTruth": _field("revisao", "Declaração de veracidade e consentimento", "on_submit", locked=True, lock_reason="Obrigatório para proteção jurídica e tratamento dos dados."),
 }
 
-STEP_LABELS = {
+RELEASE_INTAKE_STEPS = {
     "identificacao": "Identificação",
     "projeto": "Projeto",
     "faixas": "Faixas",
     "marketing": "Marketing",
     "revisao": "Revisão",
 }
+
+
+def _catalog_field(step: str, label: str, required: bool = False) -> Dict[str, Any]:
+    return _field(step, label, "on_step" if required else "optional")
+
+
+def _catalog(specs: list[tuple[str, str, str, bool]]) -> Dict[str, Dict[str, Any]]:
+    return {
+        key: _catalog_field(step, label, required)
+        for key, step, label, required in specs
+    }
+
+
+RIGHTS_CLEARANCE_STEPS = {
+    "solicitante": "Solicitante", "formato": "Formato", "contexto": "Contexto",
+    "faixas": "Faixas", "escopo": "Escopo musical", "escopo_av": "Escopo audiovisual",
+    "assets": "Referências musicais", "assets_av": "Referências audiovisuais", "revisao": "Revisão",
+}
+RIGHTS_CLEARANCE_FIELDS = _catalog([
+    ("requester_name", "solicitante", "Nome do solicitante", True),
+    ("requester_email", "solicitante", "E-mail do solicitante", True),
+    ("requester_company", "solicitante", "Empresa do solicitante", True),
+    ("requester_role", "solicitante", "Cargo ou papel no projeto", True),
+    ("clearance_format", "formato", "Formato de rights clearance", True),
+    ("project_title", "contexto", "Título do projeto", True),
+    ("responsible_company", "contexto", "Empresa responsável pelo projeto", True),
+    ("client_or_distributor", "contexto", "Cliente, distribuidora ou parceiro operacional", True),
+    ("release_or_start_date", "contexto", "Data prevista de início ou lançamento", True),
+    ("release_type", "contexto", "Tipo de lançamento", False),
+    ("project_synopsis", "contexto", "Sinopse ou contexto do pedido", False),
+    ("project_synopsis_av", "contexto", "Sinopse ou contexto do pedido", False),
+    ("has_brand_association", "contexto", "Associação com marca ou campanha", False),
+    ("brand_context", "contexto", "Marca ou contexto associado", False),
+    ("general_clearance_notes", "contexto", "Observações gerais de clearance", True),
+    ("tracks", "faixas", "Faixas", True),
+    ("tracks.title", "faixas", "Título da faixa", True),
+    ("tracks.primary_artists", "faixas", "Artistas principais", True),
+    ("tracks.authors", "faixas", "Autores / compositores", True),
+    ("tracks.publishers", "faixas", "Editoras", False),
+    ("tracks.phonogram_owner", "faixas", "Titular do fonograma", True),
+    ("tracks.has_isrc", "faixas", "Já possui ISRC?", True),
+    ("tracks.isrc_code", "faixas", "Código ISRC", True),
+    ("tracks.notes_for_clearance", "faixas", "Observações para o clearance", False),
+    ("music_title", "escopo", "Título da música", True),
+    ("artist_name", "escopo", "Artista principal", True),
+    ("phonogram_owner", "escopo", "Titular do fonograma", True),
+    ("composer_author_info", "escopo", "Compositores e autores", True),
+    ("publisher_info", "escopo", "Editoras ou publishing", True),
+    ("material_type", "escopo", "Tipo de material solicitado", True),
+    ("intended_use", "escopo", "Uso pretendido", True),
+    ("exclusivity", "escopo", "Pedido de exclusividade", True),
+    ("territory", "escopo", "Território", True),
+    ("licensing_period", "escopo", "Período de licenciamento", True),
+    ("audiovisual_type", "escopo_av", "Tipo de audiovisual ou produto", True),
+    ("director_name", "escopo_av", "Direção", True),
+    ("product_or_campaign_name", "escopo_av", "Produto, campanha ou peça", True),
+    ("scene_description", "escopo_av", "Descrição da cena ou aplicação", True),
+    ("sync_duration", "escopo_av", "Duração de sync", True),
+    ("media_channels", "escopo_av", "Canais e meios de veiculação", True),
+    ("supporting_files", "assets", "Arquivos de apoio", False),
+    ("reference_links", "assets", "Links de referência", False),
+    ("additional_notes", "assets", "Observações adicionais", False),
+    ("supporting_files_av", "assets_av", "Arquivos de apoio", False),
+    ("reference_links_av", "assets_av", "Links de referência", False),
+    ("additional_notes_av", "assets_av", "Observações adicionais", False),
+    ("consentTruth", "revisao", "Declaração de veracidade e consentimento", True),
+])
+
+PEOPLE_REGISTRY_STEPS = {
+    "identificacao": "Identificação", "contato": "Contato", "endereco": "Endereço",
+    "bancario": "Dados bancários", "adicionais": "Informações adicionais", "revisao": "Revisão",
+}
+PEOPLE_REGISTRY_FIELDS = _catalog([
+    ("party_kind", "identificacao", "Tipo de cadastro", True),
+    ("display_name", "identificacao", "Nome de exibição", True),
+    ("display_name_pj", "identificacao", "Nome / marca", True),
+    ("legal_name", "identificacao", "Nome legal", True),
+    ("legal_name_pj", "identificacao", "Razão social", True),
+    ("stage_name", "identificacao", "Nome artístico", False),
+    ("trade_name", "identificacao", "Nome fantasia", False),
+    ("document_id", "identificacao", "CPF", False),
+    ("document_id_pj", "identificacao", "CNPJ", False),
+    ("roles", "identificacao", "Funções", True),
+    ("roles_other", "identificacao", "Qual função?", True),
+    ("email_primary", "contato", "E-mail", False),
+    ("phone_primary", "contato", "Telefone / WhatsApp", False),
+    ("website", "contato", "Site", False), ("instagram", "contato", "Instagram", False),
+    ("country", "endereco", "País", False), ("state_region", "endereco", "Estado / UF", False),
+    ("city", "endereco", "Cidade", False), ("postal_code", "endereco", "CEP", False),
+    ("address_line_1", "endereco", "Endereço", False),
+    ("pix_key", "bancario", "Chave Pix", False), ("bank_name", "bancario", "Banco", False),
+    ("bank_agency", "bancario", "Agência", False), ("account_number", "bancario", "Número da conta", False),
+    ("account_holder_name", "bancario", "Titular", False),
+    ("account_holder_document_id", "bancario", "CPF/CNPJ do titular", False),
+    ("manager_name", "adicionais", "Assessor / Manager", False),
+    ("label_name", "adicionais", "Gravadora / Editora", False),
+    ("notes_internal", "adicionais", "Observações", False),
+    ("consentTruth", "revisao", "Declaração de veracidade e consentimento", True),
+])
+
+COMPANY_REGISTRY_STEPS = {
+    "empresa": "Empresa", "legal": "Responsável legal", "contrato": "Contrato",
+    "financeiro": "Financeiro", "bancario": "Dados bancários", "revisao": "Revisão",
+}
+COMPANY_REGISTRY_FIELDS = _catalog([
+    ("document_type", "empresa", "Tipo de documento", True),
+    ("document_number", "empresa", "Número do documento (CPF ou CNPJ)", True),
+    ("fantasy_name", "empresa", "Nome fantasia", True), ("legal_name", "empresa", "Razão social", True),
+    ("address", "empresa", "Endereço", True), ("city", "empresa", "Cidade", True),
+    ("state", "empresa", "Estado (UF)", True), ("zip_code", "empresa", "CEP", True),
+    ("legalrep_name", "legal", "Nome completo", True), ("legalrep_phone", "legal", "Telefone / WhatsApp", True),
+    ("legalrep_email", "legal", "E-mail", True),
+    ("contract_same_as_legal", "contrato", "Mesmo que o responsável legal?", True),
+    ("contract_name", "contrato", "Nome completo", True), ("contract_phone", "contrato", "Telefone / WhatsApp", True),
+    ("contract_email", "contrato", "E-mail", True),
+    ("financial_same_as_legal", "financeiro", "Mesmo que o responsável legal?", True),
+    ("financial_same_as_contract", "financeiro", "Mesmo que o responsável pelo contrato?", True),
+    ("financial_name", "financeiro", "Nome completo", True), ("financial_phone", "financeiro", "Telefone / WhatsApp", True),
+    ("financial_email", "financeiro", "E-mail", True),
+    ("bank_name", "bancario", "Banco", True), ("agency", "bancario", "Agência", True),
+    ("account", "bancario", "Conta (com dígito)", True), ("account_type", "bancario", "Tipo de conta", True),
+    ("pix_key", "bancario", "Chave Pix", False),
+    ("consentTruth", "revisao", "Declaração de veracidade e consentimento", True),
+])
+
+for _fields in (RIGHTS_CLEARANCE_FIELDS, PEOPLE_REGISTRY_FIELDS, COMPANY_REGISTRY_FIELDS):
+    _fields["consentTruth"].update({
+        "requirement": "on_submit",
+        "locked": True,
+        "lock_reason": "Obrigatório para proteção jurídica e tratamento dos dados.",
+    })
+
+# O e-mail do solicitante é a identidade operacional do pedido de clearance.
+RIGHTS_CLEARANCE_FIELDS["requester_email"].update({
+    "locked": True,
+    "lock_reason": "Necessário para retorno, rascunhos e atualizações do pedido.",
+})
+
+WORKFLOW_CATALOGS: Dict[str, tuple[Dict[str, Dict[str, Any]], Dict[str, str]]] = {
+    "release_intake": (RELEASE_INTAKE_FIELDS, RELEASE_INTAKE_STEPS),
+    "rights_clearance": (RIGHTS_CLEARANCE_FIELDS, RIGHTS_CLEARANCE_STEPS),
+    "people_registry": (PEOPLE_REGISTRY_FIELDS, PEOPLE_REGISTRY_STEPS),
+    "company_registry": (COMPANY_REGISTRY_FIELDS, COMPANY_REGISTRY_STEPS),
+}
+
+
+def _workflow_catalog(workflow_type: str) -> tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
+    catalog = WORKFLOW_CATALOGS.get(workflow_type)
+    if catalog is None:
+        raise HTTPException(status_code=404, detail="workflow sem catálogo de formulário")
+    return catalog
 
 
 class FormFieldPatch(BaseModel):
@@ -126,10 +277,11 @@ def _stored_form(workspace_slug: str, workflow_type: str) -> tuple[Dict[str, Any
 
 
 def _resolve(workspace_slug: str, workflow_type: str) -> Dict[str, Any]:
+    form_fields, step_labels = _workflow_catalog(workflow_type)
     stored, row_exists = _stored_form(workspace_slug, workflow_type)
     overrides = stored.get("fields") or {}
     fields: Dict[str, Dict[str, Any]] = {}
-    for key, default in FORM_FIELDS.items():
+    for key, default in form_fields.items():
         resolved = copy.deepcopy(default)
         override = overrides.get(key) if isinstance(overrides, dict) else None
         if isinstance(override, dict):
@@ -145,7 +297,7 @@ def _resolve(workspace_slug: str, workflow_type: str) -> Dict[str, Any]:
         "workflow_type": workflow_type,
         "schema_version": 1,
         "row_exists": row_exists,
-        "steps": STEP_LABELS,
+        "steps": step_labels,
         "fields": fields,
     }
 
@@ -164,7 +316,8 @@ async def patch_form_config(
 ) -> Dict[str, Any]:
     slug = workspace_slug.strip().lower()
     workflow = workflow_type.strip().lower()
-    unknown = sorted(set(body.fields) - set(FORM_FIELDS))
+    form_fields, _ = _workflow_catalog(workflow)
+    unknown = sorted(set(body.fields) - set(form_fields))
     if unknown:
         raise HTTPException(status_code=422, detail=f"campos desconhecidos: {', '.join(unknown)}")
 
@@ -174,7 +327,7 @@ async def patch_form_config(
     stored_fields = form.setdefault("fields", {})
 
     for key, patch in body.fields.items():
-        default = FORM_FIELDS[key]
+        default = form_fields[key]
         values = patch.model_dump(exclude_unset=True)
         if default["locked"]:
             if values.get("visible") is False or (
