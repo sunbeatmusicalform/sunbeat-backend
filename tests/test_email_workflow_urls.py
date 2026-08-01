@@ -93,7 +93,7 @@ class EmailWorkflowUrlTests(unittest.TestCase):
             "https://sunbeat.pro/people/atabaque?edit_token=edit-123",
         )
 
-    def test_send_edit_link_email_only_opts_clearance_into_workflow_url(self) -> None:
+    def test_send_edit_link_email_routes_each_workflow_url(self) -> None:
         with patch.object(
             email_service,
             "_post_resend",
@@ -127,8 +127,27 @@ class EmailWorkflowUrlTests(unittest.TestCase):
 
         self.assertEqual(
             resend_mock.call_args.kwargs["edit_url"],
-            "https://sunbeat.pro/intake/atabaque?edit_token=edit-company",
+            "https://sunbeat.pro/company/atabaque?edit_token=edit-company",
         )
+
+        with patch.object(
+            email_service,
+            "_post_resend",
+            return_value={"provider_message_id": "msg-789"},
+        ) as resend_mock:
+            result = email_service.send_edit_link_email(
+                to_email="ana@example.com",
+                edit_token="edit-person",
+                project_title="Ana Sol",
+                workspace_slug="atabaque",
+                workflow_type="people_registry",
+            )
+
+        self.assertEqual(
+            resend_mock.call_args.kwargs["edit_url"],
+            "https://sunbeat.pro/people/atabaque?edit_token=edit-person",
+        )
+        self.assertEqual(result["to_email"], "ana@example.com")
 
 
 if __name__ == "__main__":

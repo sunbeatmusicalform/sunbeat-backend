@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional
@@ -22,6 +23,9 @@ from app.services.workspace_config import get_workflow_settings
 from app.services.people_registry_airtable_sync import (
     sync_people_registry_record_to_airtable,
 )
+from app.services.email import send_edit_link_email
+
+logger = logging.getLogger("sunbeat.people_registry")
 
 SLUG_TEXT_PATTERN = re.compile(r"[^a-z0-9_-]+")
 DOCUMENT_PATTERN = re.compile(r"[^A-Za-z0-9]+")
@@ -660,6 +664,26 @@ def create_people_registry_record_response(
             record = build_people_registry_record_payload_from_row(persisted_row)
     except Exception:
         pass
+
+    if prepared.contact.email_primary and record.edit_token:
+        try:
+            send_edit_link_email(
+                to_email=str(prepared.contact.email_primary),
+                edit_token=record.edit_token,
+                project_title=prepared.party.display_name,
+                recipient_name=prepared.party.display_name,
+                workspace_slug=prepared.workspace_slug,
+                workflow_type="people_registry",
+                event="on_submit",
+            )
+        except Exception:
+            # The canonical record already exists. Email is an independent,
+            # best-effort side effect and must never roll back the submission.
+            logger.exception(
+                "People registry confirmation email failed record_id=%s workspace=%s",
+                record.record_id,
+                prepared.workspace_slug,
+            )
 
     return PeopleRegistryResponsePayload(
         ok=True,

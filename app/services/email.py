@@ -312,7 +312,7 @@ def send_edit_link_email(
         edit_token=edit_token,
         workspace_slug=workspace_slug,
     )
-    if workflow_type == "rights_clearance":
+    if workflow_type and workflow_type != "release_intake":
         edit_url = build_workflow_edit_url(
             edit_token=edit_token,
             workspace_slug=workspace_slug,
@@ -399,6 +399,38 @@ def send_edit_link_email(
             {edit_url}
           </a>
         </p>
+        <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
+            """
+        )
+        subject, html = _customize_email(
+            workspace_slug=workspace_slug,
+            workflow_type=_wf,
+            event=event,
+            default_subject=subject,
+            default_html=html,
+            context=template_context,
+            variant=variant,
+        )
+        return _post_resend(
+            to_email=to_email,
+            subject=subject,
+            html=html,
+            edit_url=edit_url,
+            cc=_cc,
+            bcc=_bcc,
+        ) | {"to_email": to_email}
+
+    # -- people_registry --
+    if workflow_type == "people_registry":
+        subject = f"Cadastro recebido - {safe_project_title}"
+        html = _wrap_email_html(
+            f"""
+        <p>{greeting}</p>
+        <p>Obrigada pelo envio.</p>
+        <p>Recebemos o cadastro de <strong>{escape(safe_project_title)}</strong>.</p>
+        <p>Nossa equipe vai revisar as informacoes e entrar em contato se precisar de algo adicional.</p>
+        <p>Se precisar revisar ou atualizar os dados enviados, use o link abaixo:</p>
+        <p><a href="{edit_url}" style="color: #2563eb; text-decoration: none;">{edit_url}</a></p>
         <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
             """
         )
