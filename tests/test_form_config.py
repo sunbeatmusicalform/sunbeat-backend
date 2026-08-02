@@ -43,6 +43,10 @@ class FormConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("track.audioAnalysis", result["fields"])
         self.assertIn("track.lyricsSync", result["fields"])
         self.assertEqual(result["fields"]["track.lyricsSync"]["placeholder"], "Gerar timestamps com IA")
+        self.assertIn("welcome.trackingCard", result["fields"])
+        self.assertIn("project.assetGuide", result["fields"])
+        self.assertIn("footer.poweredBy", result["fields"])
+        self.assertEqual(result["steps"]["inicio"], "Início e apresentação")
         self.assertEqual(result["fields"]["marketingNumbers"]["requirement"], "optional")
 
     def test_resolve_uses_workflow_specific_catalogs(self):
@@ -56,6 +60,9 @@ class FormConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("responsibleEmail", clearance["fields"])
         self.assertIn("stage_name", people["fields"])
         self.assertIn("document_number", company["fields"])
+        self.assertIn("footer.poweredBy", clearance["fields"])
+        self.assertIn("footer.poweredBy", people["fields"])
+        self.assertIn("footer.poweredBy", company["fields"])
         self.assertEqual(company["fields"]["consentTruth"]["requirement"], "on_submit")
         self.assertTrue(clearance["fields"]["requester_email"]["locked"])
 

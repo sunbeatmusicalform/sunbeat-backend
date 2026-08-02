@@ -42,8 +42,23 @@ def _field(
 
 
 RELEASE_INTAKE_FIELDS: Dict[str, Dict[str, Any]] = {
+    "welcome.chip": _field("inicio", "Atabaque · Um Ritmo de Pensar Música"),
+    "welcome.restrictedNotice": _field("inicio", "Formulário restrito a parceiros", hint="Se você chegou aqui por engano, fale com a equipe Atabaque."),
+    "welcome.title": _field("inicio", "Formulário de lançamento", placeholder="lançamento"),
+    "welcome.subtitle": _field("inicio", "Introdução", hint="Envie os dados, créditos e arquivos do seu próximo lançamento. Nossa equipe revisa, valida os metadados e prepara a distribuição — você acompanha tudo por e-mail."),
+    "welcome.estimateCard": _field("inicio", "10–15 minutos", hint="E salva rascunho automaticamente — volte quando quiser."),
+    "welcome.haveReadyCard": _field("inicio", "Tenha em mãos", hint="Áudios em WAV ou FLAC, capa quadrada (ideal 3000×3000) e créditos completos."),
+    "welcome.validationCard": _field("inicio", "Validação automática", hint="Analisamos áudio e capa na hora e avisamos se algo precisa de ajuste."),
+    "welcome.trackingCard": _field("inicio", "Acompanhamento", hint="Você recebe e-mails a cada etapa: recebido, em análise, ajustes e aprovado."),
+    "welcome.startButton": _field("inicio", "Começar"),
+    "welcome.resumeLink": _field("inicio", "Continuar meu rascunho"),
+    "welcome.editLink": _field("inicio", "Editar uma submissão enviada"),
+    "welcome.privacyNote": _field("inicio", "Nota de privacidade", hint="Seus dados são usados apenas para analisar e operar o seu lançamento, conforme a política de privacidade. Antes de enviar, você revisa tudo e confirma uma declaração de veracidade."),
+    "footer.poweredBy": _field("inicio", "Este formulário roda na plataforma Sunbeat", hint="intake inteligente para operações criativas"),
+    "intro.identificacao": _field("identificacao", "Vamos começar?", hint="Conta pra gente quem está por trás deste lançamento. Esses dados são só para a gente se manter em contato e te enviar atualizações."),
     "responsibleName": _field("identificacao", "Seu nome", "on_step", hint="Como você gostaria de ser chamado(a)?", placeholder="Ex.: Marina Duarte"),
     "responsibleEmail": _field("identificacao", "Seu e-mail", "on_step", hint="Usado para rascunhos, confirmações e atualizações.", placeholder="voce@exemplo.com", locked=True, lock_reason="Necessário para identificar o responsável e entregar os links do formulário."),
+    "intro.projeto": _field("projeto", "Sobre o projeto", hint="O essencial do lançamento: nome, formato, data e identidade. A partir da data, montamos o cronograma de distribuição."),
     "projectName": _field("projeto", "Nome do projeto", "on_step", hint="Título do single, EP ou álbum como deve aparecer nas plataformas.", placeholder="Ex.: Ciranda Elétrica"),
     "releaseType": _field("projeto", "Tipo de lançamento", "on_step"),
     "releaseDate": _field("projeto", "Data de lançamento", "on_step", hint="Recomendamos pelo menos 21 dias de antecedência."),
@@ -52,7 +67,9 @@ RELEASE_INTAKE_FIELDS: Dict[str, Dict[str, Any]] = {
     "videoLink": _field("projeto", "Link do vídeo", hint="Clipe, visualizer ou lyric video já publicado ou agendado.", placeholder="https://youtube.com/..."),
     "videoDate": _field("projeto", "Data do vídeo"),
     "additionalFiles": _field("projeto", "Link do kit visual", hint="Pasta com thumbs, banners, fotos e peças de divulgação.", placeholder="https://drive.google.com/..."),
+    "project.assetGuide": _field("projeto", "Guia de assets da Atabaque", hint="Consulte antes de gerar ou compartilhar os arquivos finais."),
     "notes": _field("projeto", "Observações do projeto", hint="Contexto, referências, restrições de datas ou territórios.", placeholder="Conte pra gente..."),
+    "intro.faixas": _field("faixas", "Faixas e créditos", hint="Cadastre cada música com seus créditos. É desses dados que saem o ISRC, os créditos nas plataformas e a distribuição."),
     "track.title": _field("faixas", "Nome da faixa", "on_step", placeholder="Título da música"),
     "track.mainArtists": _field("faixas", "Artistas principais", "on_step", hint="Busque no cadastro da Atabaque ou convide um novo artista.", placeholder="Digite o nome artístico…"),
     "track.featArtists": _field("faixas", "Participações (feats)", hint="Deixe em branco se não houver.", placeholder="Ex.: Zé Raminho"),
@@ -76,6 +93,7 @@ RELEASE_INTAKE_FIELDS: Dict[str, Dict[str, Any]] = {
         placeholder="Gerar timestamps com IA",
     ),
     "focusTrack": _field("faixas", "Faixa foco", "on_step", hint="Marque a faixa que guiará o plano de divulgação."),
+    "intro.marketing": _field("marketing", "Plano de divulgação", hint="Contexto estratégico, condições da campanha e pessoas que podem ampliar o lançamento."),
     "marketingNumbers": _field("marketing", "Números e resultados relevantes", hint="Shows, streams, audiência, hits, colaborações ou imprensa."),
     "focusDescription": _field("marketing", "Foco do artista e do lançamento", "on_step"),
     "goals": _field("marketing", "Objetivos do lançamento", "on_step"),
@@ -87,10 +105,13 @@ RELEASE_INTAKE_FIELDS: Dict[str, Dict[str, Any]] = {
     "guestsPromote": _field("marketing", "As participações vão divulgar junto?"),
     "promoParticipants": _field("marketing", "Participantes na promoção", placeholder="Ex.: Zé Raminho — Instagram e imprensa"),
     "influencers": _field("marketing", "Influenciadores, marcas e parceiros", placeholder="Ex.: @canaldemusica, marca Y — em conversa"),
-    "consentTruth": _field("revisao", "Declaração de veracidade e consentimento", "on_submit", locked=True, lock_reason="Obrigatório para proteção jurídica e tratamento dos dados."),
+    "intro.revisao": _field("revisao", "Revisão final", hint="Confira o resumo abaixo. Se algo estiver faltando, avisamos aqui — nada de erro genérico só no fim."),
+    "review.confidentiality": _field("revisao", "Aviso de confidencialidade", hint="Materiais enviados neste formulário podem conter informações confidenciais de projeto musical. Compartilhe apenas arquivos necessários ao fluxo e evite encaminhar links de rascunho, edição ou download para pessoas não envolvidas."),
+    "consentTruth": _field("revisao", "Declaração de veracidade e consentimento", "on_submit", hint="Ao enviar este formulário, confirmo que as informações fornecidas são verdadeiras e autorizo seu uso pela Atabaque e pela Sunbeat para fins de análise, cadastro, operação de lançamento, clearance, contratos, comunicação e organização dos materiais relacionados ao projeto. Os dados serão tratados conforme a política de privacidade aplicável e compartilhados apenas com pessoas e sistemas necessários para a execução do fluxo.", locked=True, lock_reason="Obrigatório para proteção jurídica e tratamento dos dados."),
 }
 
 RELEASE_INTAKE_STEPS = {
+    "inicio": "Início e apresentação",
     "identificacao": "Identificação",
     "projeto": "Projeto",
     "faixas": "Faixas",
@@ -223,11 +244,15 @@ COMPANY_REGISTRY_FIELDS = _catalog([
 ])
 
 for _fields in (RIGHTS_CLEARANCE_FIELDS, PEOPLE_REGISTRY_FIELDS, COMPANY_REGISTRY_FIELDS):
+    _fields["footer.poweredBy"] = _field("apresentacao", "Este formulário roda na plataforma Sunbeat", hint="formulários inteligentes para operações criativas")
     _fields["consentTruth"].update({
         "requirement": "on_submit",
         "locked": True,
         "lock_reason": "Obrigatório para proteção jurídica e tratamento dos dados.",
     })
+
+for _steps in (RIGHTS_CLEARANCE_STEPS, PEOPLE_REGISTRY_STEPS, COMPANY_REGISTRY_STEPS):
+    _steps["apresentacao"] = "Apresentação e rodapé"
 
 # O e-mail do solicitante é a identidade operacional do pedido de clearance.
 RIGHTS_CLEARANCE_FIELDS["requester_email"].update({
