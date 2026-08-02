@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import logging
 import re
+from html import escape
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException
@@ -19,6 +20,7 @@ from app.core.admin_auth import _admin_token_is_valid
 from app.core.database import supabase
 from app.modules.admin_config import _read_raw_row
 from app.modules.portal_session import require_portal_session
+from app.services.edit_access import DEFAULT_EDIT_POLICIES, EDIT_POLICIES
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/workspaces", tags=["email-config"])
@@ -47,6 +49,124 @@ _UNSAFE_HTML_RE = re.compile(
     r"<\s*script\b|javascript\s*:|\bon(?:error|load|click|mouseover|focus)\s*=",
     re.IGNORECASE,
 )
+
+
+def _wrap_preview_html(content: str) -> str:
+    return (
+        '<div style="font-family: Arial, sans-serif; line-height: 1.6; '
+        f'color: #111827;">{content}</div>'
+    )
+
+
+def _default_template_preview(
+    workspace_slug: str,
+    workflow_type: str,
+    event: str,
+    edit_policy: str,
+) -> Dict[str, str]:
+    """Return the current runtime default populated with representative data.
+
+    These values are response-only: an empty persisted template continues to mean
+    "use the backend default".  The portal can therefore show what will actually
+    be sent without copying the default into tenant configuration.
+    """
+    workspace_name = workspace_slug.replace("-", " ").title()
+    project_title = "Novo Horizonte"
+    submitter_name = "Ana Souza"
+    submitter_email = "ana@exemplo.com"
+    draft_link = f"https://sunbeat.pro/intake/{workspace_slug}?draft=abc123"
+    edit_link = f"https://sunbeat.pro/intake/{workspace_slug}?edit_token=abc123"
+
+    if event == "on_draft":
+        return {
+            "subject": "Continue o preenchimento do seu rascunho",
+            "body": _wrap_preview_html(
+                f"<p>Ola, {escape(submitter_name)}!</p>"
+                f"<p>Seu rascunho para <strong>{escape(project_title)}</strong> foi salvo.</p>"
+                "<p>Voce pode continuar o preenchimento pelo link abaixo:</p>"
+                f'<p><a href="{draft_link}">{draft_link}</a></p>'
+                "<p>Esse link leva voce de volta ao formulario com seu rascunho carregado.</p>"
+            ),
+        }
+
+    if event == "on_first_stage" and workflow_type == "release_intake":
+        return {
+            "subject": f"Primeira etapa concluida - {project_title}",
+            "body": _wrap_preview_html(
+                f"<p>O intake da <strong>{escape(workspace_name)}</strong> recebeu a conclusao da primeira etapa do formulario.</p>"
+                '<table style="border-collapse: collapse; width: 100%; margin: 24px 0;"><tbody>'
+                f'<tr><td>Projeto</td><td><strong>{escape(project_title)}</strong></td></tr>'
+                f'<tr><td>Responsavel</td><td>{escape(submitter_name)}</td></tr>'
+                f'<tr><td>E-mail</td><td>{escape(submitter_email)}</td></tr>'
+                '<tr><td>Etapa atual</td><td>Projeto</td></tr>'
+                "</tbody></table>"
+                "<p>Para continuar o atendimento operacional ou retomar o rascunho, use o link abaixo:</p>"
+                f'<p><a href="{draft_link}">{draft_link}</a></p>'
+            ),
+        }
+
+    if event == "on_summary" and workflow_type == "release_intake":
+        return {
+            "subject": f"Nova submissao recebida - {project_title}",
+            "body": _wrap_preview_html(
+                f"<p>O intake da <strong>{escape(workspace_name)}</strong> recebeu uma nova submissao.</p>"
+                '<table style="border-collapse: collapse; width: 100%; margin: 24px 0;"><tbody>'
+                f'<tr><td>Projeto</td><td><strong>{escape(project_title)}</strong></td></tr>'
+                f'<tr><td>Responsavel</td><td>{escape(submitter_name)}</td></tr>'
+                f'<tr><td>E-mail</td><td>{escape(submitter_email)}</td></tr>'
+                '<tr><td>Tipo de lancamento</td><td>Single</td></tr>'
+                '<tr><td>Data prevista</td><td>18/09/2026</td></tr>'
+                '<tr><td>Genero</td><td>MPB</td></tr>'
+                f'<tr><td>Faixa foco</td><td>{escape(project_title)}</td></tr>'
+                "</tbody></table>"
+                f"<p><strong>Faixas enviadas</strong></p><ul><li>{escape(project_title)}</li></ul>"
+                "<p>Para revisar ou ajustar a submissao, use o link abaixo:</p>"
+                f'<p><a href="{edit_link}">{edit_link}</a></p>'
+            ),
+        }
+
+    if event in {"on_submit", "on_edit"}:
+        include_edit_link = (
+            event == "on_edit"
+            or edit_policy == "link_after_submit"
+        )
+        edit_paragraph = (
+            "<p>Se precisar revisar ou atualizar as informações enviadas, use o link abaixo:</p>"
+            f'<p><a href="{edit_link}">{edit_link}</a></p>'
+            if include_edit_link
+            else "<p>Após o envio, alterações precisam ser autorizadas pela equipe responsável.</p>"
+        )
+        if workflow_type == "rights_clearance":
+            subject = f"Solicitacao de clearance recebida - {project_title}"
+            description = (
+                f"Recebemos a sua solicitacao de clearance para <strong>{escape(project_title)}</strong>."
+                "</p><p>Nossa equipe vai analisar as informacoes enviadas e entrar em contato "
+                "se precisar de algo adicional."
+            )
+        elif workflow_type in {"company_registry", "people_registry"}:
+            subject = f"Cadastro recebido - {project_title}"
+            description = (
+                f"Recebemos o cadastro de <strong>{escape(project_title)}</strong>."
+                "</p><p>Nossa equipe vai revisar as informacoes e entrar em contato "
+                "se precisar de algo adicional."
+            )
+        else:
+            subject = f"Resumo do lançamento - {project_title} - 18/09/2026 + Banda Horizonte"
+            description = (
+                f"Recebemos o envio do lancamento <strong>{escape(project_title)}</strong>."
+                "</p><p>A data informada para o lancamento e <strong>18/09/2026</strong>."
+                "</p><p>Faltam <strong>47</strong> dias para o lancamento."
+            )
+        return {
+            "subject": subject,
+            "body": _wrap_preview_html(
+                f"<p>Ola, {escape(submitter_name)}!</p><p>Obrigada pelo envio.</p>"
+                f"<p>{description}</p>{edit_paragraph}"
+                "<p>Se voce nao reconhece este envio, pode ignorar este email.</p>"
+            ),
+        }
+
+    return {"subject": "", "body": ""}
 
 
 def _normalize_email_list(values: List[str]) -> List[str]:
@@ -139,15 +259,23 @@ async def _require_admin_or_portal(
     require_portal_session(workspace_slug, x_portal_token)
 
 
-def _email_block(workspace_slug: str, workflow_type: str) -> tuple[Dict[str, Any], bool]:
+def _email_block(
+    workspace_slug: str,
+    workflow_type: str,
+) -> tuple[Dict[str, Any], bool, str]:
     row = _read_raw_row(workspace_slug, workflow_type)
     extra = (row or {}).get("extra_settings") or {}
     email = extra.get("email") or {}
-    return (email if isinstance(email, dict) else {}), row is not None
+    editing = extra.get("editing") or {}
+    default_policy = DEFAULT_EDIT_POLICIES.get(workflow_type, "disabled")
+    edit_policy = str(editing.get("policy") or default_policy)
+    if edit_policy not in EDIT_POLICIES:
+        edit_policy = default_policy
+    return (email if isinstance(email, dict) else {}), row is not None, edit_policy
 
 
 def _resolve(workspace_slug: str, workflow_type: str) -> Dict[str, Any]:
-    email, row_exists = _email_block(workspace_slug, workflow_type)
+    email, row_exists, edit_policy = _email_block(workspace_slug, workflow_type)
     raw_events = email.get("events") or {}
     raw_templates = email.get("templates") or {}
 
@@ -161,9 +289,17 @@ def _resolve(workspace_slug: str, workflow_type: str) -> Dict[str, Any]:
             "_origin": "db" if event in raw_events else "default",
         }
         template_cfg = raw_templates.get(event) or {}
+        default_preview = _default_template_preview(
+            workspace_slug,
+            workflow_type,
+            event,
+            edit_policy,
+        )
         templates[event] = {
             "subject": str(template_cfg.get("subject") or ""),
             "body": str(template_cfg.get("body") or ""),
+            "default_subject": default_preview["subject"],
+            "default_body": default_preview["body"],
             "_origin": "db" if event in raw_templates else "default",
         }
 

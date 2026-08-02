@@ -55,6 +55,42 @@ class EmailConfigTests(unittest.TestCase):
             ["ops@example.com"],
         )
         self.assertIn("project_title", payload["placeholders"])
+        first_stage = payload["templates"]["on_first_stage"]
+        self.assertEqual(
+            first_stage["default_subject"],
+            "Primeira etapa concluida - Novo Horizonte",
+        )
+        self.assertIn(
+            "recebeu a conclusao da primeira etapa",
+            first_stage["default_body"],
+        )
+
+    def test_effective_preview_keeps_saved_fields_separate_from_defaults(self) -> None:
+        token = issue_portal_token("atabaque")
+        row = {
+            "extra_settings": {
+                "email": {
+                    "templates": {
+                        "on_first_stage": {
+                            "subject": "Projeto {{project_title}}",
+                            "body": "<p>Olá, {{submitter_name}}</p>",
+                        }
+                    }
+                }
+            }
+        }
+        with patch("app.modules.email_config._read_raw_row", return_value=row):
+            response = client.get(
+                "/workspaces/atabaque/workflows/release_intake/email-config",
+                headers={"X-Portal-Token": token},
+            )
+        template = response.json()["templates"]["on_first_stage"]
+        self.assertEqual(template["subject"], "Projeto {{project_title}}")
+        self.assertEqual(template["body"], "<p>Olá, {{submitter_name}}</p>")
+        self.assertEqual(
+            template["default_subject"],
+            "Primeira etapa concluida - Novo Horizonte",
+        )
 
     def test_patch_preserves_unrelated_extra_settings(self) -> None:
         token = issue_portal_token("atabaque")
