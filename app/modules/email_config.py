@@ -70,60 +70,82 @@ def _default_template_preview(
     "use the backend default".  The portal can therefore show what will actually
     be sent without copying the default into tenant configuration.
     """
-    workspace_name = workspace_slug.replace("-", " ").title()
-    project_title = "Novo Horizonte"
-    submitter_name = "Ana Souza"
-    submitter_email = "ana@exemplo.com"
-    draft_link = f"https://sunbeat.pro/intake/{workspace_slug}?draft=abc123"
-    edit_link = f"https://sunbeat.pro/intake/{workspace_slug}?edit_token=abc123"
+    sample = {
+        "workspace_name": workspace_slug.replace("-", " ").title(),
+        "project_title": "Novo Horizonte",
+        "submitter_name": "Ana Souza",
+        "submitter_email": "ana@exemplo.com",
+        "release_date": "18/09/2026",
+        "release_type": "Single",
+        "genre": "MPB",
+        "primary_artist": "Banda Horizonte",
+        "draft_link": f"https://sunbeat.pro/intake/{workspace_slug}?draft=abc123",
+        "edit_link": f"https://sunbeat.pro/intake/{workspace_slug}?edit_token=abc123",
+        "current_step": "Projeto",
+        "tracks_count": "1",
+        "focus_track": "Novo Horizonte",
+        "track_titles": "Novo Horizonte",
+    }
+
+    def result(subject_template: str, body_template: str) -> Dict[str, str]:
+        render = lambda value: _PLACEHOLDER_RE.sub(  # noqa: E731
+            lambda match: escape(sample.get(match.group(1), match.group(0)), quote=True),
+            value,
+        )
+        return {
+            "subject": render(subject_template),
+            "body": render(body_template),
+            "template_subject": subject_template,
+            "template_body": body_template,
+        }
 
     if event == "on_draft":
-        return {
-            "subject": "Continue o preenchimento do seu rascunho",
-            "body": _wrap_preview_html(
-                f"<p>Ola, {escape(submitter_name)}!</p>"
-                f"<p>Seu rascunho para <strong>{escape(project_title)}</strong> foi salvo.</p>"
+        return result(
+            "Continue o preenchimento do seu rascunho",
+            _wrap_preview_html(
+                "<p>Ola, {{submitter_name}}!</p>"
+                "<p>Seu rascunho para <strong>{{project_title}}</strong> foi salvo.</p>"
                 "<p>Voce pode continuar o preenchimento pelo link abaixo:</p>"
-                f'<p><a href="{draft_link}">{draft_link}</a></p>'
+                '<p><a href="{{draft_link}}">{{draft_link}}</a></p>'
                 "<p>Esse link leva voce de volta ao formulario com seu rascunho carregado.</p>"
             ),
-        }
+        )
 
     if event == "on_first_stage" and workflow_type == "release_intake":
-        return {
-            "subject": f"Primeira etapa concluida - {project_title}",
-            "body": _wrap_preview_html(
-                f"<p>O intake da <strong>{escape(workspace_name)}</strong> recebeu a conclusao da primeira etapa do formulario.</p>"
+        return result(
+            "Primeira etapa concluida - {{project_title}}",
+            _wrap_preview_html(
+                "<p>O intake da <strong>{{workspace_name}}</strong> recebeu a conclusao da primeira etapa do formulario.</p>"
                 '<table style="border-collapse: collapse; width: 100%; margin: 24px 0;"><tbody>'
-                f'<tr><td>Projeto</td><td><strong>{escape(project_title)}</strong></td></tr>'
-                f'<tr><td>Responsavel</td><td>{escape(submitter_name)}</td></tr>'
-                f'<tr><td>E-mail</td><td>{escape(submitter_email)}</td></tr>'
-                '<tr><td>Etapa atual</td><td>Projeto</td></tr>'
+                '<tr><td>Projeto</td><td><strong>{{project_title}}</strong></td></tr>'
+                '<tr><td>Responsavel</td><td>{{submitter_name}}</td></tr>'
+                '<tr><td>E-mail</td><td>{{submitter_email}}</td></tr>'
+                '<tr><td>Etapa atual</td><td>{{current_step}}</td></tr>'
                 "</tbody></table>"
                 "<p>Para continuar o atendimento operacional ou retomar o rascunho, use o link abaixo:</p>"
-                f'<p><a href="{draft_link}">{draft_link}</a></p>'
+                '<p><a href="{{draft_link}}">{{draft_link}}</a></p>'
             ),
-        }
+        )
 
     if event == "on_summary" and workflow_type == "release_intake":
-        return {
-            "subject": f"Nova submissao recebida - {project_title}",
-            "body": _wrap_preview_html(
-                f"<p>O intake da <strong>{escape(workspace_name)}</strong> recebeu uma nova submissao.</p>"
+        return result(
+            "Nova submissao recebida - {{project_title}}",
+            _wrap_preview_html(
+                "<p>O intake da <strong>{{workspace_name}}</strong> recebeu uma nova submissao.</p>"
                 '<table style="border-collapse: collapse; width: 100%; margin: 24px 0;"><tbody>'
-                f'<tr><td>Projeto</td><td><strong>{escape(project_title)}</strong></td></tr>'
-                f'<tr><td>Responsavel</td><td>{escape(submitter_name)}</td></tr>'
-                f'<tr><td>E-mail</td><td>{escape(submitter_email)}</td></tr>'
-                '<tr><td>Tipo de lancamento</td><td>Single</td></tr>'
-                '<tr><td>Data prevista</td><td>18/09/2026</td></tr>'
-                '<tr><td>Genero</td><td>MPB</td></tr>'
-                f'<tr><td>Faixa foco</td><td>{escape(project_title)}</td></tr>'
+                '<tr><td>Projeto</td><td><strong>{{project_title}}</strong></td></tr>'
+                '<tr><td>Responsavel</td><td>{{submitter_name}}</td></tr>'
+                '<tr><td>E-mail</td><td>{{submitter_email}}</td></tr>'
+                '<tr><td>Tipo de lancamento</td><td>{{release_type}}</td></tr>'
+                '<tr><td>Data prevista</td><td>{{release_date}}</td></tr>'
+                '<tr><td>Genero</td><td>{{genre}}</td></tr>'
+                '<tr><td>Faixa foco</td><td>{{focus_track}}</td></tr>'
                 "</tbody></table>"
-                f"<p><strong>Faixas enviadas</strong></p><ul><li>{escape(project_title)}</li></ul>"
+                "<p><strong>Faixas enviadas</strong></p><p>{{track_titles}}</p>"
                 "<p>Para revisar ou ajustar a submissao, use o link abaixo:</p>"
-                f'<p><a href="{edit_link}">{edit_link}</a></p>'
+                '<p><a href="{{edit_link}}">{{edit_link}}</a></p>'
             ),
-        }
+        )
 
     if event in {"on_submit", "on_edit"}:
         include_edit_link = (
@@ -132,41 +154,41 @@ def _default_template_preview(
         )
         edit_paragraph = (
             "<p>Se precisar revisar ou atualizar as informações enviadas, use o link abaixo:</p>"
-            f'<p><a href="{edit_link}">{edit_link}</a></p>'
+            '<p><a href="{{edit_link}}">{{edit_link}}</a></p>'
             if include_edit_link
             else "<p>Após o envio, alterações precisam ser autorizadas pela equipe responsável.</p>"
         )
         if workflow_type == "rights_clearance":
-            subject = f"Solicitacao de clearance recebida - {project_title}"
+            subject = "Solicitacao de clearance recebida - {{project_title}}"
             description = (
-                f"Recebemos a sua solicitacao de clearance para <strong>{escape(project_title)}</strong>."
+                "Recebemos a sua solicitacao de clearance para <strong>{{project_title}}</strong>."
                 "</p><p>Nossa equipe vai analisar as informacoes enviadas e entrar em contato "
                 "se precisar de algo adicional."
             )
         elif workflow_type in {"company_registry", "people_registry"}:
-            subject = f"Cadastro recebido - {project_title}"
+            subject = "Cadastro recebido - {{project_title}}"
             description = (
-                f"Recebemos o cadastro de <strong>{escape(project_title)}</strong>."
+                "Recebemos o cadastro de <strong>{{project_title}}</strong>."
                 "</p><p>Nossa equipe vai revisar as informacoes e entrar em contato "
                 "se precisar de algo adicional."
             )
         else:
-            subject = f"Resumo do lançamento - {project_title} - 18/09/2026 + Banda Horizonte"
+            subject = "Resumo do lançamento - {{project_title}} - {{release_date}} + {{primary_artist}}"
             description = (
-                f"Recebemos o envio do lancamento <strong>{escape(project_title)}</strong>."
-                "</p><p>A data informada para o lancamento e <strong>18/09/2026</strong>."
+                "Recebemos o envio do lancamento <strong>{{project_title}}</strong>."
+                "</p><p>A data informada para o lancamento e <strong>{{release_date}}</strong>."
                 "</p><p>Faltam <strong>47</strong> dias para o lancamento."
             )
-        return {
-            "subject": subject,
-            "body": _wrap_preview_html(
-                f"<p>Ola, {escape(submitter_name)}!</p><p>Obrigada pelo envio.</p>"
+        return result(
+            subject,
+            _wrap_preview_html(
+                "<p>Ola, {{submitter_name}}!</p><p>Obrigada pelo envio.</p>"
                 f"<p>{description}</p>{edit_paragraph}"
                 "<p>Se voce nao reconhece este envio, pode ignorar este email.</p>"
             ),
-        }
+        )
 
-    return {"subject": "", "body": ""}
+    return {"subject": "", "body": "", "template_subject": "", "template_body": ""}
 
 
 def _normalize_email_list(values: List[str]) -> List[str]:
@@ -300,6 +322,8 @@ def _resolve(workspace_slug: str, workflow_type: str) -> Dict[str, Any]:
             "body": str(template_cfg.get("body") or ""),
             "default_subject": default_preview["subject"],
             "default_body": default_preview["body"],
+            "default_subject_template": default_preview["template_subject"],
+            "default_body_template": default_preview["template_body"],
             "_origin": "db" if event in raw_templates else "default",
         }
 

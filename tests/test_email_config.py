@@ -64,6 +64,11 @@ class EmailConfigTests(unittest.TestCase):
             "recebeu a conclusao da primeira etapa",
             first_stage["default_body"],
         )
+        self.assertEqual(
+            first_stage["default_subject_template"],
+            "Primeira etapa concluida - {{project_title}}",
+        )
+        self.assertIn("{{draft_link}}", first_stage["default_body_template"])
 
     def test_effective_preview_keeps_saved_fields_separate_from_defaults(self) -> None:
         token = issue_portal_token("atabaque")
