@@ -21,6 +21,7 @@ from app.modules.form_config import router as form_config_router
 from app.modules.lyrics_alignment import router as lyrics_alignment_router
 from app.modules.people_registry import router as people_registry_router
 from app.modules.portal_branding import router as portal_branding_router
+from app.modules.portal_operations import router as portal_operations_router
 from app.modules.portal_session import router as portal_session_router
 from app.modules.release_intake_history import router as release_intake_history_router
 from app.modules.release_drafts import router as drafts_router
@@ -64,6 +65,7 @@ app.include_router(form_config_router)
 app.include_router(lyrics_alignment_router)
 app.include_router(people_registry_router)
 app.include_router(portal_branding_router)
+app.include_router(portal_operations_router)
 app.include_router(portal_session_router)
 app.include_router(release_intake_history_router)
 app.include_router(submissions_router)
@@ -199,7 +201,7 @@ if os.path.isdir(STATIC_DIR):
         workspace_slug: str | None = None
 
         # Detecta /intake/:workspace_slug ou /intake/:workspace_slug/*
-        intake_match = re.match(r"^intake/([^/]+)", full_path)
+        intake_match = re.match(r"^(?:intake|clearance|people|company)/([^/]+)", full_path)
         if intake_match:
             workspace_slug = intake_match.group(1)
 
