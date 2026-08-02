@@ -42,6 +42,10 @@ for _schema_name in [
 
 _workspace_config_module = types.ModuleType("app.services.workspace_config")
 _workspace_config_module.get_workflow_settings = lambda *_args, **_kwargs: {}
+_workspace_config_module.get_email_extra_config = lambda *_args, **_kwargs: {}
+_workspace_config_module.get_email_event_config = lambda *_args, **_kwargs: {}
+_workspace_config_module.get_email_template_config = lambda *_args, **_kwargs: {}
+_workspace_config_module.is_email_event_enabled = lambda *_args, **_kwargs: False
 
 _airtable_sync_module = types.ModuleType("app.services.people_registry_airtable_sync")
 _airtable_sync_module.sync_people_registry_record_to_airtable = (
@@ -142,7 +146,7 @@ class PeopleRegistryLookupTests(unittest.TestCase):
             people_registry_service,
             "supabase",
             _LookupSupabase(SENSITIVE_LOOKUP_ROWS),
-        ):
+        ), patch.object(people_registry_service, "_airtable_client_lookup_rows", return_value=[]):
             response = people_registry_service.lookup_people_registry_records(
                 workspace_slug="atabaque",
                 query="ana",
@@ -189,7 +193,7 @@ class PeopleRegistryLookupTests(unittest.TestCase):
             people_registry_service,
             "supabase",
             _LookupSupabase(rows),
-        ):
+        ), patch.object(people_registry_service, "_airtable_client_lookup_rows", return_value=[]):
             response = people_registry_service.lookup_people_registry_records(
                 workspace_slug="atabaque",
                 query="ana",
@@ -205,6 +209,41 @@ class PeopleRegistryLookupTests(unittest.TestCase):
         self.assertTrue(
             all(item["id"].startswith("people_lookup_") for item in data["items"])
         )
+
+    def test_lookup_is_accent_and_typo_tolerant_and_ranks_client_candidates(self) -> None:
+        client_rows = [
+            {
+                "id": "rec-ludmilla",
+                "workspace_slug": "atabaque",
+                "display_name": "Ludmilla",
+                "roles_json": ["artista"],
+            },
+            {
+                "id": "rec-luciana",
+                "workspace_slug": "atabaque",
+                "display_name": "Luciana",
+                "roles_json": ["artista"],
+            },
+        ]
+        with patch.object(
+            people_registry_service,
+            "supabase",
+            _LookupSupabase([]),
+        ), patch.object(
+            people_registry_service,
+            "_airtable_client_lookup_rows",
+            return_value=client_rows,
+        ):
+            response = people_registry_service.lookup_people_registry_records(
+                workspace_slug="atabaque",
+                query="Ludmila",
+                roles="artista",
+                limit=5,
+            )
+
+        items = response.model_dump(mode="json")["items"]
+        self.assertEqual(items[0]["displayName"], "Ludmilla")
+        self.assertEqual(items[0]["confidence"], "partial")
 
 
 if __name__ == "__main__":

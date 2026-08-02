@@ -3,7 +3,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+import time
+import unicodedata
 from datetime import datetime, timezone
+from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Optional
 from uuid import uuid4, UUID
 
@@ -34,6 +37,9 @@ PEOPLE_REGISTRY_TABLE = "people_registry_records"
 PEOPLE_LOOKUP_MIN_QUERY_LENGTH = 2
 PEOPLE_LOOKUP_MAX_LIMIT = 10
 PEOPLE_LOOKUP_CANDIDATE_LIMIT = 50
+PEOPLE_LOOKUP_SIMILARITY_THRESHOLD = 0.62
+PEOPLE_LOOKUP_CLIENT_CACHE_SECONDS = 300
+_CLIENT_LOOKUP_CACHE: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
 
 
 def _normalized_text(value: Any) -> Optional[str]:
@@ -79,7 +85,9 @@ def _normalized_email(value: Any) -> Optional[str]:
 
 
 def _normalized_lookup_text(value: Any) -> str:
-    text = re.sub(r"\s+", " ", str(value or "").strip().lower())
+    decomposed = unicodedata.normalize("NFKD", str(value or ""))
+    text = "".join(char for char in decomposed if not unicodedata.combining(char))
+    text = re.sub(r"\s+", " ", text.strip().casefold())
     return text.replace("%", "").replace("_", "").replace("\\", "")
 
 
@@ -135,6 +143,66 @@ def _build_people_lookup_id(row: Dict[str, Any]) -> str:
 
 def _lookup_confidence(display_name: str, query: str) -> str:
     return "exact" if _normalized_lookup_text(display_name) == query else "partial"
+
+
+def _lookup_score(display_name: str, query: str) -> float:
+    name = _normalized_lookup_text(display_name)
+    if not name or not query:
+        return 0.0
+    if name == query:
+        return 1.0
+    if query in name or name in query:
+        return 0.94
+    if len(query) < 4:
+        return 0.0
+
+    name_tokens = set(name.split())
+    query_tokens = set(query.split())
+    token_overlap = len(name_tokens & query_tokens) / max(len(query_tokens), 1)
+    sequence = SequenceMatcher(None, name, query).ratio()
+    prefix = 0.82 if name.startswith(query[: max(3, len(query) - 2)]) else 0.0
+    return max(sequence, token_overlap * 0.9, prefix)
+
+
+def _airtable_client_lookup_rows(workspace_slug: str) -> List[Dict[str, Any]]:
+    from app.core.config import settings
+    from app.services.people_registry_verify import _list_airtable_records
+
+    if workspace_slug != "atabaque":
+        return []
+    cached = _CLIENT_LOOKUP_CACHE.get(workspace_slug)
+    now = time.monotonic()
+    if cached and now - cached[0] < PEOPLE_LOOKUP_CLIENT_CACHE_SECONDS:
+        return cached[1]
+
+    base_id = str(settings.AIRTABLE_BASE_ID or "").strip()
+    table_name = str(settings.AIRTABLE_CLIENTS_TABLE or "").strip()
+    if not base_id or not table_name:
+        return []
+
+    records = _list_airtable_records(base_id=base_id, table_name=table_name)
+    rows: List[Dict[str, Any]] = []
+    for record in records:
+        fields = record.get("fields") if isinstance(record, dict) else None
+        if not isinstance(fields, dict):
+            continue
+        status = _normalized_lookup_text(fields.get(settings.AIRTABLE_CLIENT_STATUS_FIELD))
+        if status and status not in {"ativo", "active"}:
+            continue
+        raw_name = fields.get(settings.AIRTABLE_CLIENT_NAME_FIELD)
+        if isinstance(raw_name, list):
+            raw_name = raw_name[0] if raw_name else ""
+        display_name = str(raw_name or "").strip()
+        if not display_name:
+            continue
+        rows.append({
+            "id": str(record.get("id") or display_name),
+            "workspace_slug": workspace_slug,
+            "display_name": display_name,
+            "roles_json": ["artista"],
+        })
+    _CLIENT_LOOKUP_CACHE[workspace_slug] = (now, rows)
+    return rows
 
 
 def _issue(field: str, message: str) -> PeopleRegistryValidationIssuePayload:
@@ -468,41 +536,60 @@ def lookup_people_registry_records(
         supabase.table(PEOPLE_REGISTRY_TABLE)
         .select("id, workspace_slug, display_name, roles_json")
         .eq("workspace_slug", normalized_workspace)
-        .ilike("display_name", f"%{normalized_query}%")
         .order("display_name", desc=False)
         .limit(PEOPLE_LOOKUP_CANDIDATE_LIMIT)
         .execute()
     )
 
     rows = getattr(result, "data", None)
-    if not isinstance(rows, list):
-        return PeopleRegistryLookupResponsePayload(ok=True, items=[])
+    candidates = rows if isinstance(rows, list) else []
+    try:
+        candidates = [*candidates, *_airtable_client_lookup_rows(normalized_workspace)]
+    except Exception:
+        logger.warning(
+            "Airtable client lookup unavailable workspace=%s",
+            normalized_workspace,
+            exc_info=True,
+        )
 
-    items: List[PeopleRegistryLookupItemPayload] = []
-    for row in rows:
+    ranked: List[tuple[float, str, PeopleRegistryLookupItemPayload]] = []
+    seen_names: set[str] = set()
+    for row in candidates:
         if not isinstance(row, dict):
             continue
 
         display_name = str(row.get("display_name") or "").strip()
         if not display_name:
             continue
+        normalized_name = _normalized_lookup_text(display_name)
+        if normalized_name in seen_names:
+            continue
 
         row_roles = _normalized_lookup_roles(row.get("roles_json") or [])
         if requested_roles and not set(requested_roles).intersection(row_roles):
             continue
 
-        items.append(
-            PeopleRegistryLookupItemPayload(
+        score = _lookup_score(display_name, normalized_query)
+        if score < PEOPLE_LOOKUP_SIMILARITY_THRESHOLD:
+            continue
+        seen_names.add(normalized_name)
+
+        ranked.append(
+            (
+                score,
+                normalized_name,
+                PeopleRegistryLookupItemPayload(
                 id=_build_people_lookup_id(row),
                 displayName=display_name,
                 roles=row_roles,
                 source="people_registry",
                 confidence=_lookup_confidence(display_name, normalized_query),
+                ),
             )
         )
 
-        if len(items) >= bounded_limit:
-            break
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    items = [item[2] for item in ranked[:bounded_limit]]
 
     return PeopleRegistryLookupResponsePayload(ok=True, items=items)
 
