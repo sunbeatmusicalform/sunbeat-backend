@@ -240,6 +240,12 @@ def _airtable_data() -> Dict[str, Any]:
             "active": fields.get("Ativa") is not False,
             "responsible": _text(fields.get("Label responsável") or fields.get("Responsavel")),
             "start_date": _iso(fields.get("Data Inicio")), "end_date": _iso(fields.get("Data Fim")),
+            "completion_date": _iso(
+                fields.get("Data de Conclusão")
+                or fields.get("Data de Conclusao")
+                or fields.get("Concluído em")
+                or fields.get("Concluido em")
+            ),
             "release_date": _iso(fields.get("Data de Lançamento")), "risk": _text(fields.get("Risco")),
         })
 
