@@ -17,6 +17,34 @@ def test_url_normalization_accepts_only_web_links():
     ]) == ["https://drive.google.com/file/123", "https://cdn.example.com/capa.png"]
 
 
+def test_airtable_demand_resolves_project_through_calendar(monkeypatch):
+    def records(table, _fields, _limit=100):
+        if table == portal_operations.PROJECTS_TABLE:
+            return [{"id": "recProject", "fields": {
+                "Nome do Projeto": "Projeto real", "Link da Capa": "https://cdn.example.com/capa.png",
+            }}]
+        if table == portal_operations.TRACKS_TABLE:
+            return [{"id": "recTrack", "fields": {
+                "Projeto": ["recProject"], "Link do Áudio (WAV)": "https://cdn.example.com/audio.wav",
+            }}]
+        if table == portal_operations.DEMANDS_TABLE:
+            return [{"id": "recDemand", "fields": {
+                "Ticket da Demanda": "DEM-1", "Produto": ["recCalendar"],
+                "Produto (from Produto)": ["Projeto real"],
+            }}]
+        return []
+
+    monkeypatch.setattr(portal_operations, "_records", records)
+    monkeypatch.setattr(portal_operations, "_records_by_ids", lambda *_args: [{
+        "id": "recCalendar", "fields": {"Origem Projeto ID": "recProject"},
+    }])
+
+    result = portal_operations._airtable_data()
+
+    assert result["demands"][0]["project_id"] == "recProject"
+    assert [item["label"] for item in result["demands"][0]["file_links"]] == ["Capa", "Áudio 1"]
+
+
 def test_portal_data_uses_only_live_sources(monkeypatch):
     monkeypatch.setattr(portal_operations, "_submission_rows", lambda _slug: [])
     monkeypatch.setattr(portal_operations, "_airtable_data", lambda: {

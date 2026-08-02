@@ -28,6 +28,7 @@ PROJECTS_TABLE = "[V2] Projetos Musicais"
 TRACKS_TABLE = "[V2] Faixas Musicais"
 STAGES_TABLE = "[V2] Etapas do Lançamento"
 DEMANDS_TABLE = "[V2] Demandas Operacionais"
+CALENDAR_TABLE = "[V2] Calendário de Lançamentos"
 
 
 async def _require_portal_or_admin(
@@ -45,6 +46,23 @@ def _records(table: str, fields: Iterable[str], limit: int = 100) -> List[Dict[s
         "GET",
         _table_url(table),
         params={"pageSize": min(limit, 100), "maxRecords": limit, "fields[]": list(fields)},
+    )
+    rows = data.get("records")
+    return rows if isinstance(rows, list) else []
+
+
+def _records_by_ids(table: str, record_ids: Iterable[Any], fields: Iterable[str]) -> List[Dict[str, Any]]:
+    ids = list(dict.fromkeys(
+        str(record_id) for record_id in record_ids
+        if re.fullmatch(r"rec[A-Za-z0-9]+", str(record_id or ""))
+    ))[:100]
+    if not ids:
+        return []
+    formula = "OR(" + ",".join(f"RECORD_ID()='{record_id}'" for record_id in ids) + ")"
+    data = _request_json(
+        "GET",
+        _table_url(table),
+        params={"pageSize": 100, "filterByFormula": formula, "fields[]": list(fields)},
     )
     rows = data.get("records")
     return rows if isinstance(rows, list) else []
@@ -150,6 +168,18 @@ def _airtable_data() -> Dict[str, Any]:
         "Tipo de Demanda", "Data Limite Calculada", "Dias Restantes", "Status de Upload",
         "Origem Projeto ID", "Produto (from Produto)",
     ], 100)
+    demand_product_ids = [
+        record_id
+        for row in demand_rows
+        for record_id in ((row.get("fields") or {}).get("Produto") or [])
+    ]
+    calendar_rows = _records_by_ids(
+        CALENDAR_TABLE, demand_product_ids, ["Produto", "Origem Projeto ID"]
+    )
+    calendar_by_id = {
+        str(row.get("id") or ""): row.get("fields") or {}
+        for row in calendar_rows
+    }
 
     tracks_by_project: Dict[str, List[Dict[str, Any]]] = {}
     for row in track_rows:
@@ -216,8 +246,12 @@ def _airtable_data() -> Dict[str, Any]:
     demands: List[Dict[str, Any]] = []
     for row in demand_rows:
         fields = row.get("fields") or {}
-        origin_project_id = _text(fields.get("Origem Projeto ID"))
         linked_products = fields.get("Produto") or []
+        calendar_fields = next(
+            (calendar_by_id.get(str(record_id)) for record_id in linked_products if calendar_by_id.get(str(record_id))),
+            {},
+        )
+        origin_project_id = _text(fields.get("Origem Projeto ID")) or _text(calendar_fields.get("Origem Projeto ID"))
         project_id = origin_project_id if origin_project_id in names else next(
             (str(record_id) for record_id in linked_products if str(record_id) in names), ""
         )
