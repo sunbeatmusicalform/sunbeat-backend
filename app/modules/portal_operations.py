@@ -62,6 +62,16 @@ def _has_value(value: Any) -> bool:
     return bool(value and (not isinstance(value, list) or len(value) > 0))
 
 
+def _urls(value: Any) -> List[str]:
+    values = value if isinstance(value, list) else [value]
+    urls: List[str] = []
+    for item in values:
+        candidate = item.get("url") if isinstance(item, dict) else item
+        if isinstance(candidate, str) and candidate.strip().lower().startswith(("https://", "http://")):
+            urls.append(candidate.strip())
+    return list(dict.fromkeys(urls))
+
+
 def _iso(value: Any) -> Optional[str]:
     raw = _text(value)
     if not raw:
@@ -125,7 +135,7 @@ def _airtable_data() -> Dict[str, Any]:
         "Nome do Projeto", "Artistas Principais (from [V2] Faixas Musicais)",
         "Tipo de Lançamento", "Data de Lançamento", "Capa do Projeto", "Faixas",
         "Status Geral do Projeto", "Gênero Musical", "Criado em", "Origem Projeto ID",
-        "Automação V2 — Sincronizado em",
+        "Automação V2 — Sincronizado em", "Link da Capa",
     ], 100)
     track_rows = _records(TRACKS_TABLE, [
         "Título da Faixa", "Projeto", "Código ISRC", "Link do Áudio (WAV)",
@@ -138,7 +148,7 @@ def _airtable_data() -> Dict[str, Any]:
     demand_rows = _records(DEMANDS_TABLE, [
         "Ticket da Demanda", "Produto", "Data de Lançamento", "Status da Demanda",
         "Tipo de Demanda", "Data Limite Calculada", "Dias Restantes", "Status de Upload",
-        "Origem Projeto ID",
+        "Origem Projeto ID", "Produto (from Produto)",
     ], 100)
 
     tracks_by_project: Dict[str, List[Dict[str, Any]]] = {}
@@ -147,6 +157,7 @@ def _airtable_data() -> Dict[str, Any]:
             tracks_by_project.setdefault(str(project_id), []).append(row)
 
     names: Dict[str, str] = {}
+    files_by_project: Dict[str, List[Dict[str, str]]] = {}
     projects: List[Dict[str, Any]] = []
     for row in project_rows:
         fields = row.get("fields") or {}
@@ -159,6 +170,13 @@ def _airtable_data() -> Dict[str, Any]:
         track_fields = [track.get("fields") or {} for track in tracks]
         isrc_values = [_text(item.get("Código ISRC")) for item in track_fields]
         audio_values = [item.get("Link do Áudio (WAV)") for item in track_fields]
+        project_files: List[Dict[str, str]] = []
+        for url in _urls(fields.get("Link da Capa")):
+            project_files.append({"label": "Capa", "url": url})
+        for index, item in enumerate(track_fields, start=1):
+            for url in _urls(item.get("Link do Áudio (WAV)")):
+                project_files.append({"label": f"Áudio {index}", "url": url})
+        files_by_project[project_id] = project_files
         projects.append({
             "id": project_id,
             "title": title,
@@ -198,7 +216,12 @@ def _airtable_data() -> Dict[str, Any]:
     demands: List[Dict[str, Any]] = []
     for row in demand_rows:
         fields = row.get("fields") or {}
-        product = _text(fields.get("Produto"))
+        origin_project_id = _text(fields.get("Origem Projeto ID"))
+        linked_products = fields.get("Produto") or []
+        project_id = origin_project_id if origin_project_id in names else next(
+            (str(record_id) for record_id in linked_products if str(record_id) in names), ""
+        )
+        product = _text(fields.get("Produto (from Produto)")) or names.get(project_id, "")
         if _looks_like_test(product):
             continue
         demands.append({
@@ -209,6 +232,9 @@ def _airtable_data() -> Dict[str, Any]:
             "deadline": _iso(fields.get("Data Limite Calculada")),
             "days_remaining": fields.get("Dias Restantes"),
             "upload_status": _text(fields.get("Status de Upload")),
+            "project_id": project_id,
+            "project_title": names.get(project_id, ""),
+            "file_links": files_by_project.get(project_id, []),
         })
 
     return {"projects": projects, "stages": stages, "demands": demands}
@@ -239,14 +265,19 @@ async def get_portal_data(
 
     drive_folders = []
     email_activity = []
+    drive_by_project: Dict[str, str] = {}
     for row in submissions:
         title = row.get("release_title") or row.get("main_title") or "Submissão"
         if _looks_like_test(title):
             continue
         folder_id = row.get("google_drive_folder_id")
         if folder_id:
+            project_id = _text(row.get("airtable_project_id"))
+            if project_id:
+                drive_by_project.setdefault(project_id, str(folder_id))
             drive_folders.append({
                 "submission_id": row.get("id"), "project": title, "folder_id": folder_id,
+                "project_id": project_id,
                 "url": f"https://drive.google.com/drive/folders/{quote(str(folder_id), safe='')}",
                 "created_at": row.get("created_at"),
             })
@@ -255,6 +286,14 @@ async def get_portal_data(
                 "submission_id": row.get("id"), "project": title,
                 "status": row.get("email_status") or "sent", "sent_at": row.get("email_sent_at"),
             })
+
+    for demand in live.get("demands") or []:
+        folder_id = drive_by_project.get(_text(demand.get("project_id")))
+        if folder_id:
+            demand["file_links"] = [
+                {"label": "Pasta do projeto", "url": f"https://drive.google.com/drive/folders/{quote(folder_id, safe='')}"},
+                *(demand.get("file_links") or []),
+            ]
 
     sync_rows = [row for row in submissions if not _looks_like_test(row.get("release_title") or row.get("main_title"))]
     synced = sum(1 for row in sync_rows if row.get("airtable_sync_status") == "synced")
