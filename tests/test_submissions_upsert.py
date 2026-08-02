@@ -119,7 +119,7 @@ def _release_payload(
             "submitter_name": "Ana",
             "submitter_email": "ana@example.com",
             "project_title": "Projeto Teste",
-            "release_type": "single",
+            "release_type": "ep",
         },
         "project": {
             "release_date": "2026-05-01",

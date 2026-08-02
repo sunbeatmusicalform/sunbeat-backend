@@ -64,6 +64,17 @@ RELEASE_INTAKE_FIELDS: Dict[str, Dict[str, Any]] = {
     "track.profiles": _field("faixas", "Perfis de artista", hint="Informe perfis a criar e links de perfis existentes."),
     "track.lyrics": _field("faixas", "Letra da música", hint="Cole a letra completa. Faixas instrumentais podem deixar este campo em branco.", placeholder="Cole aqui a letra completa da música…"),
     "track.audio": _field("faixas", "Áudio da faixa", "on_step", hint="Master em WAV ou FLAC."),
+    "track.audioAnalysis": _field(
+        "faixas",
+        "Guia e análise técnica do áudio",
+        hint="Exibe a compatibilidade do master com os padrões técnicos configurados.",
+    ),
+    "track.lyricsSync": _field(
+        "faixas",
+        "Sincronização da letra",
+        hint="Usa IA para sugerir timestamps que podem ser revisados antes da exportação.",
+        placeholder="Gerar timestamps com IA",
+    ),
     "focusTrack": _field("faixas", "Faixa foco", "on_step", hint="Marque a faixa que guiará o plano de divulgação."),
     "marketingNumbers": _field("marketing", "Números e resultados relevantes", hint="Shows, streams, audiência, hits, colaborações ou imprensa."),
     "focusDescription": _field("marketing", "Foco do artista e do lançamento", "on_step"),

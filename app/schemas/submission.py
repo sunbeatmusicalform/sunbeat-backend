@@ -128,9 +128,17 @@ class ReleaseIntakeSubmissionPayload(BaseModel):
     workflow_type: WorkflowType = "release_intake"
     identification: IdentificationPayload
     project: ProjectPayload
-    tracks: List[TrackPayload]
+    tracks: List[TrackPayload] = Field(..., min_length=1)
     marketing: Optional[MarketingPayload] = None
     meta: Optional[SubmissionMetaPayload] = None
+
+    @model_validator(mode="after")
+    def validate_release_track_count(self) -> "ReleaseIntakeSubmissionPayload":
+        if self.identification.release_type == "single":
+            if len(self.tracks) != 1:
+                raise ValueError("um single deve conter exatamente uma faixa")
+            self.tracks[0].is_focus_track = True
+        return self
 
 
 class RightsClearanceRequesterPayload(BaseModel):

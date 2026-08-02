@@ -40,6 +40,9 @@ class FormConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["fields"]["responsibleEmail"]["locked"])
         self.assertEqual(result["fields"]["track.audio"]["requirement"], "on_step")
         self.assertEqual(result["fields"]["track.lyrics"]["requirement"], "optional")
+        self.assertIn("track.audioAnalysis", result["fields"])
+        self.assertIn("track.lyricsSync", result["fields"])
+        self.assertEqual(result["fields"]["track.lyricsSync"]["placeholder"], "Gerar timestamps com IA")
         self.assertEqual(result["fields"]["marketingNumbers"]["requirement"], "optional")
 
     def test_resolve_uses_workflow_specific_catalogs(self):
