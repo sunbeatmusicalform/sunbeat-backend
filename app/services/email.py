@@ -14,6 +14,7 @@ from app.services.workspace_config import (
     get_email_template_config,
     is_email_event_enabled,
 )
+from app.services.edit_access import get_edit_policy
 
 logger = logging.getLogger("sunbeat.email")
 
@@ -308,16 +309,25 @@ def send_edit_link_email(
         exclude=[to_email, *(_cc or [])],
     ) or None
 
-    edit_url = build_edit_url(
+    generated_edit_url = build_edit_url(
         edit_token=edit_token,
         workspace_slug=workspace_slug,
     )
     if workflow_type and workflow_type != "release_intake":
-        edit_url = build_workflow_edit_url(
+        generated_edit_url = build_workflow_edit_url(
             edit_token=edit_token,
             workspace_slug=workspace_slug,
             workflow_type=workflow_type,
         )
+    policy = get_edit_policy(workspace_slug, _wf)
+    include_edit_link = event == "on_edit" or policy == "link_after_submit"
+    edit_url = generated_edit_url if include_edit_link else None
+    edit_paragraph = (
+        f'<p>Se precisar revisar ou atualizar as informações enviadas, use o link abaixo:</p>'
+        f'<p><a href="{generated_edit_url}" style="color: #2563eb; text-decoration: none;">{generated_edit_url}</a></p>'
+        if include_edit_link
+        else '<p>Após o envio, alterações precisam ser autorizadas pela equipe responsável.</p>'
+    )
 
     safe_project_title = (project_title or "").strip() or "Projeto sem titulo"
     greeting = (
@@ -334,7 +344,7 @@ def send_edit_link_email(
         "genre": "",
         "primary_artist": primary_artist or "",
         "draft_link": "",
-        "edit_link": edit_url,
+        "edit_link": edit_url or "",
         "workspace_name": workspace_slug.replace("-", " ").title(),
         "current_step": "",
         "tracks_count": "",
@@ -353,14 +363,7 @@ def send_edit_link_email(
         <strong>{escape(safe_project_title)}</strong>.</p>
         <p>Nossa equipe vai analisar as informacoes enviadas e entrar em contato
         se precisar de algo adicional.</p>
-        <p>
-          Se precisar revisar ou atualizar as informacoes enviadas, use o link abaixo:
-        </p>
-        <p>
-          <a href="{edit_url}" style="color: #2563eb; text-decoration: none;">
-            {edit_url}
-          </a>
-        </p>
+        {edit_paragraph}
         <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
             """
         )
@@ -391,14 +394,7 @@ def send_edit_link_email(
         <p>Obrigada pelo envio.</p>
         <p>Recebemos o cadastro de <strong>{escape(safe_project_title)}</strong>.</p>
         <p>Nossa equipe vai revisar as informacoes e entrar em contato em breve.</p>
-        <p>
-          Se precisar revisar ou atualizar os dados enviados, use o link abaixo:
-        </p>
-        <p>
-          <a href="{edit_url}" style="color: #2563eb; text-decoration: none;">
-            {edit_url}
-          </a>
-        </p>
+        {edit_paragraph}
         <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
             """
         )
@@ -429,8 +425,7 @@ def send_edit_link_email(
         <p>Obrigada pelo envio.</p>
         <p>Recebemos o cadastro de <strong>{escape(safe_project_title)}</strong>.</p>
         <p>Nossa equipe vai revisar as informacoes e entrar em contato se precisar de algo adicional.</p>
-        <p>Se precisar revisar ou atualizar os dados enviados, use o link abaixo:</p>
-        <p><a href="{edit_url}" style="color: #2563eb; text-decoration: none;">{edit_url}</a></p>
+        {edit_paragraph}
         <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
             """
         )
@@ -478,15 +473,7 @@ def send_edit_link_email(
         <p>{project_line}</p>
         <p>{release_date_line}</p>
         <p>{days_until_release_line}</p>
-        <p>
-          A partir do link abaixo, voce pode editar a submissao sempre que precisar
-          revisar ou atualizar as informacoes enviadas:
-        </p>
-        <p>
-          <a href="{edit_url}" style="color: #2563eb; text-decoration: none;">
-            {edit_url}
-          </a>
-        </p>
+        {edit_paragraph}
         <p>Se voce nao reconhece este envio, pode ignorar este email.</p>
         """
     )

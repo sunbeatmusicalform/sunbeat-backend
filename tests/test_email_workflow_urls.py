@@ -125,9 +125,27 @@ class EmailWorkflowUrlTests(unittest.TestCase):
                 workflow_type="company_registry",
             )
 
+        # Company é bloqueado após o envio; o link só nasce quando o portal
+        # autoriza a edição (evento on_edit).
+        self.assertIsNone(resend_mock.call_args.kwargs["edit_url"])
+
+        with patch.object(
+            email_service,
+            "_post_resend",
+            return_value={"provider_message_id": "msg-457"},
+        ) as resend_mock:
+            email_service.send_edit_link_email(
+                to_email="ana@example.com",
+                edit_token="edit-company-authorized",
+                project_title="Empresa Teste",
+                workspace_slug="atabaque",
+                workflow_type="company_registry",
+                event="on_edit",
+            )
+
         self.assertEqual(
             resend_mock.call_args.kwargs["edit_url"],
-            "https://sunbeat.pro/company/atabaque?edit_token=edit-company",
+            "https://sunbeat.pro/company/atabaque?edit_token=edit-company-authorized",
         )
 
         with patch.object(
@@ -143,11 +161,26 @@ class EmailWorkflowUrlTests(unittest.TestCase):
                 workflow_type="people_registry",
             )
 
+        self.assertIsNone(resend_mock.call_args.kwargs["edit_url"])
+        self.assertEqual(result["to_email"], "ana@example.com")
+
+        with patch.object(
+            email_service,
+            "_post_resend",
+            return_value={"provider_message_id": "msg-790"},
+        ) as resend_mock:
+            email_service.send_edit_link_email(
+                to_email="ana@example.com",
+                edit_token="edit-person-authorized",
+                project_title="Ana Sol",
+                workspace_slug="atabaque",
+                workflow_type="people_registry",
+                event="on_edit",
+            )
         self.assertEqual(
             resend_mock.call_args.kwargs["edit_url"],
-            "https://sunbeat.pro/people/atabaque?edit_token=edit-person",
+            "https://sunbeat.pro/people/atabaque?edit_token=edit-person-authorized",
         )
-        self.assertEqual(result["to_email"], "ana@example.com")
 
 
 if __name__ == "__main__":

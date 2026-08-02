@@ -355,6 +355,9 @@ def _resolve(workspace_slug: str, workflow_type: str) -> Dict[str, Any]:
                     if resolved["locked"] and name in {"visible", "requirement"}:
                         continue
                     resolved[name] = override[name]
+        if workspace_slug == "atabaque" and key == "welcome.editLink":
+            # No tenant real, edição só nasce de link seguro de e-mail/portal.
+            resolved["visible"] = False
         resolved["key"] = key
         resolved["_origin"] = "db" if isinstance(override, dict) else "default"
         fields[key] = resolved

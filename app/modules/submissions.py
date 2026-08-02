@@ -34,6 +34,7 @@ from app.services.airtable import (
 from app.services.airtable_company_registry import sync_company_registry_to_airtable, update_company_registry_in_airtable
 from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable, update_rights_clearance_case_in_airtable
 from app.services.email import send_edit_link_email, send_submission_summary_email
+from app.services.edit_access import get_edit_policy, is_edit_token_authorized
 from app.services.workspace_config import (
     get_workflow_settings,
     get_email_event_config,
@@ -2342,6 +2343,13 @@ async def load_edit_submission(edit_token: str):
         type(row.get("tracks_json")).__name__,
     )
     workflow_identity = _workflow_identity_from_row(row)
+    if not is_edit_token_authorized(
+        workflow_identity["workspace_slug"],
+        workflow_identity["workflow_type"],
+        str(row.get("id") or ""),
+        edit_token,
+    ):
+        raise HTTPException(status_code=403, detail="Edição não autorizada para esta submissão")
     track_rows = _load_submission_tracks(str(row.get("id") or ""))
     if track_rows and workflow_identity["workflow_type"] != RIGHTS_CLEARANCE_WORKFLOW_TYPE:
         track_rows = _ensure_track_rows_have_client_track_ids(track_rows)
@@ -2365,6 +2373,11 @@ def _handle_clearance_edit_resubmit(
     existing_row = _load_submission_by_edit_token(edit_token)
     if existing_row is None:
         return None  # fall through to create new submission
+
+    if not is_edit_token_authorized(
+        payload.workspace_slug, "rights_clearance", str(existing_row.get("id") or ""), edit_token
+    ):
+        raise HTTPException(status_code=403, detail="Edição não autorizada para esta submissão")
 
     submission_id = str(existing_row["id"])
     now_iso = _utc_now_iso()
@@ -2454,6 +2467,11 @@ def _handle_company_registry_edit_resubmit(
     existing_row = _load_submission_by_edit_token(edit_token)
     if existing_row is None:
         return None  # fall through to create new submission
+
+    if not is_edit_token_authorized(
+        payload.workspace_slug, "company_registry", str(existing_row.get("id") or ""), edit_token
+    ):
+        raise HTTPException(status_code=403, detail="Edição não autorizada para esta submissão")
 
     submission_id = str(existing_row["id"])
     now_iso = _utc_now_iso()
@@ -2899,7 +2917,12 @@ def create_submission(
         "ok": True,
         "submission_id": submission_id,
         "draft_token": _as_uuid(validated_payload.draft_token),
-        "edit_token": edit_token,
+        "edit_token": (
+            edit_token
+            if get_edit_policy(validated_payload.workspace_slug, _submission_workflow_type(validated_payload))
+            == "link_after_submit"
+            else None
+        ),
         "tracks_created": len(created_tracks),
         "message": "Submission created successfully.",
         "drive_sync": drive_sync,
@@ -2934,7 +2957,7 @@ def create_submission(
     response["email_debug"] = {
         "to_email": _get_submission_contact_email(validated_payload),
         "subject": (email_result or {}).get("subject") or email_subject,
-        "edit_url": (email_result or {}).get("edit_url") or edit_url,
+        "edit_url": (email_result or {}).get("edit_url"),
         "provider_response": (email_result or {}).get("provider_response"),
         "provider_message_id": (email_result or {}).get("provider_message_id"),
     }

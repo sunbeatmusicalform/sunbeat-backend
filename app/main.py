@@ -18,6 +18,7 @@ from app.modules.drive_config import router as drive_config_router
 from app.modules.email_config import router as email_config_router
 from app.modules.file_uploads import router as file_uploads_router
 from app.modules.form_config import router as form_config_router
+from app.modules.edit_access import router as edit_access_router
 from app.modules.help_config import router as help_config_router
 from app.modules.lyrics_alignment import router as lyrics_alignment_router
 from app.modules.people_registry import router as people_registry_router
@@ -63,6 +64,7 @@ app.include_router(drive_config_router)
 app.include_router(email_config_router)
 app.include_router(file_uploads_router)
 app.include_router(form_config_router)
+app.include_router(edit_access_router)
 app.include_router(help_config_router)
 app.include_router(lyrics_alignment_router)
 app.include_router(people_registry_router)

@@ -27,6 +27,7 @@ from app.services.people_registry_airtable_sync import (
     sync_people_registry_record_to_airtable,
 )
 from app.services.email import send_edit_link_email
+from app.services.edit_access import is_edit_token_authorized
 
 logger = logging.getLogger("sunbeat.people_registry")
 
@@ -772,6 +773,10 @@ def create_people_registry_record_response(
                 prepared.workspace_slug,
             )
 
+    # People/Company usam autorização administrativa: o token inicial nunca é
+    # exposto ao navegador. O portal rotaciona e autoriza um novo token.
+    record = record.model_copy(update={"edit_token": None})
+
     return PeopleRegistryResponsePayload(
         ok=True,
         status="created",
@@ -852,6 +857,25 @@ def get_people_registry_record_by_edit_token_response(edit_token: str) -> People
             ),
         )
 
+    if not is_edit_token_authorized(
+        str(row.get("workspace_slug") or ""),
+        "people_registry",
+        str(row.get("id") or ""),
+        edit_token,
+    ):
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="error",
+            data=None,
+            record=None,
+            error=build_people_registry_error_detail(
+                code="people_registry_record_not_found",
+                message="Edit access is not authorized for this record.",
+                stage="people_registry_edit_lookup",
+                issues=[],
+            ),
+        )
+
     return PeopleRegistryResponsePayload(
         ok=True,
         status="fetched",
@@ -898,6 +922,25 @@ def update_people_registry_record_response(
             error=build_people_registry_error_detail(
                 code="people_registry_record_not_found",
                 message="No people registry record found for this edit_token.",
+                stage="people_registry_edit_lookup",
+                issues=[],
+            ),
+        )
+
+    if not is_edit_token_authorized(
+        str(existing_row.get("workspace_slug") or prepared.workspace_slug),
+        "people_registry",
+        str(existing_row.get("id") or ""),
+        edit_token,
+    ):
+        return PeopleRegistryResponsePayload(
+            ok=False,
+            status="error",
+            data=prepared,
+            record=None,
+            error=build_people_registry_error_detail(
+                code="people_registry_record_not_found",
+                message="Edit access is not authorized for this record.",
                 stage="people_registry_edit_lookup",
                 issues=[],
             ),
