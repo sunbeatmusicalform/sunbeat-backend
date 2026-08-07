@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     SUPABASE_KEY: str | None = Field(default=None)
 
     FRONTEND_BASE_URL: str = Field(default="https://sunbeat.pro")
+    SELF_SERVICE_SIGNUP_ENABLED: bool = Field(default=True)
 
     AI_GATEWAY_ENABLED: bool = Field(default=False)
     AI_COPILOT_SECRET: str | None = Field(default=None)

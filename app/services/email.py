@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import hashlib
 import re
 from html import escape
 from typing import Any, Dict, Iterable, List, Optional
@@ -231,6 +232,55 @@ def send_public_lead_email(
         to_email="contatofelipefonsek@gmail.com",
         subject=f"Sunbeat · {subject_kind} · {name}",
         html=html,
+    )
+
+
+def send_workspace_magic_link_email(
+    *,
+    to_email: str,
+    name: str,
+    workspace_name: str,
+    magic_link: str,
+    locale: str = "en",
+    purpose: str = "signup",
+) -> Dict[str, Any]:
+    """Send a short-lived workspace access link without exposing auth details."""
+    safe_name = escape(name or "there")
+    safe_workspace = escape(workspace_name)
+    safe_link = escape(magic_link, quote=True)
+    is_pt = locale == "pt-BR"
+    if is_pt:
+        subject = f"Seu acesso à Sunbeat · {workspace_name}"
+        heading = "Confirme seu acesso"
+        body = (
+            f"Olá, {safe_name}. Clique abaixo para acessar o workspace "
+            f"<strong>{safe_workspace}</strong>."
+        )
+        button = "Acessar a Sunbeat" if purpose == "login" else "Confirmar e iniciar onboarding"
+        note = "Este link expira em 30 minutos e só funciona para este workspace."
+    else:
+        subject = f"Your Sunbeat access · {workspace_name}"
+        heading = "Confirm your access"
+        body = (
+            f"Hi, {safe_name}. Use the button below to access the "
+            f"<strong>{safe_workspace}</strong> workspace."
+        )
+        button = "Access Sunbeat" if purpose == "login" else "Confirm and start onboarding"
+        note = "This link expires in 30 minutes and only works for this workspace."
+    html = f"""
+    <div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f160f;max-width:560px;margin:auto;padding:32px">
+      <p style="font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:#9a6500">Sunbeat</p>
+      <h1 style="font-size:28px;margin:12px 0">{heading}</h1>
+      <p>{body}</p>
+      <p style="margin:28px 0"><a href="{safe_link}" style="display:inline-block;background:#512314;color:#fff4d6;text-decoration:none;padding:13px 22px;border-radius:999px;font-weight:700">{button}</a></p>
+      <p style="font-size:12px;color:#74685f">{note}</p>
+    </div>
+    """
+    return _post_resend(
+        to_email=to_email,
+        subject=subject,
+        html=html,
+        idempotency_key=f"sunbeat-{purpose}-{hashlib.sha256(magic_link.encode()).hexdigest()[:24]}",
     )
 
 
