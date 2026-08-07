@@ -41,6 +41,7 @@ from app.services.workspace_config import (
     is_email_event_enabled,
 )
 from app.services.google_drive import sync_clearance_to_google_drive, sync_submission_to_google_drive
+from app.services.self_service_entitlements import enforce_self_service_submission_limits
 
 logger = logging.getLogger("sunbeat.submissions")
 
@@ -2634,6 +2635,11 @@ def create_submission(
             replay_row,
             message="Submission already processed recently.",
         )
+
+    enforce_self_service_submission_limits(
+        workspace_slug=validated_payload.workspace_slug,
+        workflow_type=_submission_workflow_type(validated_payload),
+    )
 
     now_iso = _utc_now_iso()
     submission_id = str(uuid4())
