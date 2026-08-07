@@ -193,6 +193,47 @@ def _post_resend(
     }
 
 
+def send_public_lead_email(
+    *,
+    lead_type: str,
+    name: str,
+    email: str,
+    company: str | None = None,
+    plan: str | None = None,
+    message: str | None = None,
+) -> Dict[str, Any]:
+    """Notify Sunbeat about a public pricing or Enterprise enquiry."""
+    safe = {
+        "lead_type": escape(lead_type),
+        "name": escape(name),
+        "email": escape(email),
+        "company": escape(company or "—"),
+        "plan": escape(plan or "—"),
+        "message": escape(message or "—").replace("\n", "<br>"),
+    }
+    if lead_type == "enterprise":
+        subject_kind = "Enterprise"
+    elif lead_type == "academy":
+        subject_kind = "Sunbeat Academy"
+    else:
+        subject_kind = f"Waitlist · {plan or 'Sunbeat'}"
+    html = f"""
+    <div style="font-family:Arial,sans-serif;line-height:1.55;color:#00141d">
+      <h2 style="margin:0 0 18px">Novo contato Sunbeat — {safe['lead_type']}</h2>
+      <p><strong>Nome:</strong> {safe['name']}<br>
+      <strong>E-mail:</strong> <a href="mailto:{safe['email']}">{safe['email']}</a><br>
+      <strong>Empresa/operação:</strong> {safe['company']}<br>
+      <strong>Plano:</strong> {safe['plan']}</p>
+      <p><strong>Mensagem:</strong><br>{safe['message']}</p>
+    </div>
+    """
+    return _post_resend(
+        to_email="contatofelipefonsek@gmail.com",
+        subject=f"Sunbeat · {subject_kind} · {name}",
+        html=html,
+    )
+
+
 def build_edit_url(edit_token: str, workspace_slug: str = "atabaque") -> str:
     base = settings.FRONTEND_BASE_URL.rstrip("/")
     return f"{base}/intake/{workspace_slug}?edit_token={edit_token}"

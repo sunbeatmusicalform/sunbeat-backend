@@ -5,10 +5,11 @@ import logging
 import os
 import re
 import traceback
+from html import escape
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.core.database import supabase
@@ -25,6 +26,7 @@ from app.modules.people_registry import router as people_registry_router
 from app.modules.portal_branding import router as portal_branding_router
 from app.modules.portal_operations import router as portal_operations_router
 from app.modules.portal_session import router as portal_session_router
+from app.modules.public_leads import router as public_leads_router
 from app.modules.release_intake_history import router as release_intake_history_router
 from app.modules.release_drafts import router as drafts_router
 from app.modules.submissions import router as submissions_router
@@ -71,6 +73,7 @@ app.include_router(people_registry_router)
 app.include_router(portal_branding_router)
 app.include_router(portal_operations_router)
 app.include_router(portal_session_router)
+app.include_router(public_leads_router)
 app.include_router(release_intake_history_router)
 app.include_router(submissions_router)
 app.include_router(tables_router)
@@ -172,6 +175,140 @@ def _inject_og_tags(html: str, branding: dict, request_url: str) -> str:
     return html
 
 
+ACADEMY_ARTICLE_PATH = "/academy/music-release-intake-checklist"
+
+
+def _inject_marketing_locale(html: str, hostname: str, path: str = "/") -> str:
+    """Serve localized, indexable metadata and structured data for public pages."""
+    is_brazil = hostname.lower().removeprefix("www.").endswith("sunbeat.com.br")
+    origin = "https://sunbeat.com.br" if is_brazil else "https://sunbeat.pro"
+    normalized_path = path if path.startswith("/") else f"/{path}"
+
+    if is_brazil:
+        lang = "pt-BR"
+        if normalized_path == "/academy":
+            title = "Sunbeat Academy | Operações para lançamentos musicais"
+            description = "Guias práticos para labels, managers e equipes criativas criarem fluxos melhores de lançamento, metadados confiáveis e intake de arquivos."
+            page_type = "website"
+        elif normalized_path == ACADEMY_ARTICLE_PATH:
+            title = "Checklist de intake para lançamentos | Sunbeat Academy"
+            description = "Um checklist prático para coletar metadados e validar áudio e capa antes que os prazos de distribuição virem emergências."
+            page_type = "article"
+        else:
+            title = "Sunbeat | Intake inteligente para operações criativas"
+            description = "A Sunbeat conecta formulários inteligentes, auditoria de arquivos, direitos e integrações para equipes criativas."
+            page_type = "website"
+    else:
+        lang = "en"
+        if normalized_path == "/academy":
+            title = "Sunbeat Academy | Music release operations"
+            description = "Practical guides for labels, managers and creative teams building clearer music release workflows, better metadata and reliable file intake."
+            page_type = "website"
+        elif normalized_path == ACADEMY_ARTICLE_PATH:
+            title = "Music release intake checklist | Sunbeat Academy"
+            description = "A practical checklist for collecting release metadata and validating audio and artwork before distribution deadlines become emergencies."
+            page_type = "article"
+        else:
+            title = "Sunbeat | Intelligent intake for creative operations"
+            description = "Sunbeat connects intelligent intake forms, file auditing, rights and integrations for creative teams."
+            page_type = "website"
+
+    canonical = f"{origin}{normalized_path}"
+    image = f"{origin}/brand/og-image.png"
+
+    html = re.sub(r'<html\s+lang="[^"]*"', f'<html lang="{lang}"', html, count=1)
+    html = re.sub(r'<title>.*?</title>', f'<title>{escape(title)}</title>', html, count=1)
+    html = re.sub(
+        r'<meta name="description" content=".*?"\s*/?>',
+        f'<meta name="description" content="{escape(description)}" />',
+        html,
+        count=1,
+    )
+    html = re.sub(
+        r'<meta property="og:title" content=".*?"\s*/?>',
+        f'<meta property="og:title" content="{escape(title)}" />',
+        html,
+        count=1,
+    )
+    html = re.sub(
+        r'<meta property="og:description" content=".*?"\s*/?>',
+        f'<meta property="og:description" content="{escape(description)}" />',
+        html,
+        count=1,
+    )
+    html = re.sub(
+        r'<meta property="og:image" content=".*?"\s*/?>',
+        f'<meta property="og:image" content="{image}" />',
+        html,
+        count=1,
+    )
+    html = re.sub(
+        r'<meta property="og:type" content=".*?"\s*/?>',
+        f'<meta property="og:type" content="{page_type}" />',
+        html,
+        count=1,
+    )
+
+    if normalized_path == ACADEMY_ARTICLE_PATH:
+        article_headline = (
+            "Checklist de intake para lançamentos musicais: metadados, áudio e capa"
+            if is_brazil
+            else "The music release intake checklist: metadata, audio and artwork"
+        )
+        structured_data = {
+            "@context": "https://schema.org",
+            "@type": "BlogPosting",
+            "headline": article_headline,
+            "description": description,
+            "datePublished": "2026-08-07",
+            "dateModified": "2026-08-07",
+            "inLanguage": lang,
+            "mainEntityOfPage": canonical,
+            "image": image,
+            "author": {"@type": "Organization", "name": "Sunbeat"},
+            "publisher": {"@type": "Organization", "name": "Sunbeat", "url": origin},
+        }
+    elif normalized_path == "/academy":
+        structured_data = {
+            "@context": "https://schema.org",
+            "@type": "CollectionPage",
+            "name": "Sunbeat Academy",
+            "description": description,
+            "url": canonical,
+            "inLanguage": lang,
+            "isPartOf": {"@type": "WebSite", "name": "Sunbeat", "url": origin},
+        }
+    else:
+        structured_data = {
+            "@context": "https://schema.org",
+            "@graph": [
+                {"@type": "Organization", "@id": f"{origin}/#organization", "name": "Sunbeat", "url": origin, "logo": f"{origin}/brand/icon-512.png"},
+                {"@type": "WebSite", "@id": f"{origin}/#website", "name": "Sunbeat", "url": origin, "inLanguage": lang, "publisher": {"@id": f"{origin}/#organization"}},
+                {"@type": "SoftwareApplication", "name": "Sunbeat", "applicationCategory": "BusinessApplication", "operatingSystem": "Web", "url": origin, "description": description, "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"}},
+            ],
+        }
+
+    alternate_en = f"https://sunbeat.pro{normalized_path}"
+    alternate_pt = f"https://sunbeat.com.br{normalized_path}"
+    alternates = (
+        f'<link rel="canonical" href="{canonical}" />'
+        f'<link rel="alternate" hreflang="en" href="{alternate_en}" />'
+        f'<link rel="alternate" hreflang="pt-BR" href="{alternate_pt}" />'
+        f'<link rel="alternate" hreflang="x-default" href="{alternate_en}" />'
+        f'<link rel="alternate" type="application/rss+xml" title="Sunbeat Academy" href="{origin}/feed.xml" />'
+        '<meta name="robots" content="index,follow,max-image-preview:large" />'
+        '<meta property="og:site_name" content="Sunbeat" />'
+        f'<meta property="og:url" content="{canonical}" />'
+        f'<meta property="og:locale" content="{"pt_BR" if is_brazil else "en_US"}" />'
+        '<meta name="twitter:card" content="summary_large_image" />'
+        f'<meta name="twitter:title" content="{escape(title)}" />'
+        f'<meta name="twitter:description" content="{escape(description)}" />'
+        f'<meta name="twitter:image" content="{image}" />'
+        f'<script type="application/ld+json">{json.dumps(structured_data, ensure_ascii=False, separators=(",", ":"))}</script>'
+    )
+    return html.replace("</head>", f"{alternates}</head>")
+
+
 async def _fetch_workspace_branding(workspace_slug: str) -> dict | None:
     try:
         res = (
@@ -188,13 +325,82 @@ async def _fetch_workspace_branding(workspace_slug: str) -> dict | None:
     return None
 
 
+def _public_origin(hostname: str) -> tuple[str, str]:
+    is_brazil = hostname.lower().removeprefix("www.").endswith("sunbeat.com.br")
+    return ("https://sunbeat.com.br", "pt-BR") if is_brazil else ("https://sunbeat.pro", "en")
+
+
+def _robots_txt(hostname: str) -> str:
+    origin, _ = _public_origin(hostname)
+    return f"User-agent: *\nAllow: /\nDisallow: /api/\nSitemap: {origin}/sitemap.xml\n"
+
+
+def _sitemap_xml(hostname: str) -> str:
+    origin, _ = _public_origin(hostname)
+    paths = ("/", "/academy", ACADEMY_ARTICLE_PATH)
+    entries = []
+    for path in paths:
+        en_url = f"https://sunbeat.pro{path}"
+        pt_url = f"https://sunbeat.com.br{path}"
+        entries.append(
+            "<url>"
+            f"<loc>{origin}{path}</loc>"
+            "<lastmod>2026-08-07</lastmod>"
+            f'<xhtml:link rel="alternate" hreflang="en" href="{en_url}" />'
+            f'<xhtml:link rel="alternate" hreflang="pt-BR" href="{pt_url}" />'
+            f'<xhtml:link rel="alternate" hreflang="x-default" href="{en_url}" />'
+            "</url>"
+        )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" '
+        'xmlns:xhtml="http://www.w3.org/1999/xhtml">'
+        f"{''.join(entries)}"
+        "</urlset>"
+    )
+
+
+def _academy_feed_xml(hostname: str) -> str:
+    origin, lang = _public_origin(hostname)
+    is_brazil = lang == "pt-BR"
+    title = "Checklist de intake para lançamentos musicais: metadados, áudio e capa" if is_brazil else "The music release intake checklist: metadata, audio and artwork"
+    description = "Um checklist prático para organizar metadados, áudio e capa." if is_brazil else "A practical checklist for organizing metadata, audio and artwork."
+    article_url = f"{origin}{ACADEMY_ARTICLE_PATH}"
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        f'<rss version="2.0"><channel><title>Sunbeat Academy</title><link>{origin}/academy</link>'
+        f"<description>{escape(description)}</description><language>{lang}</language>"
+        f"<item><title>{escape(title)}</title><link>{article_url}</link><guid>{article_url}</guid>"
+        f"<pubDate>Fri, 07 Aug 2026 12:00:00 GMT</pubDate><description>{escape(description)}</description></item>"
+        "</channel></rss>"
+    )
+
+
 if os.path.isdir(STATIC_DIR):
+    html_no_cache_headers = {
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Pragma": "no-cache",
+        "Expires": "0",
+    }
+    operational_noindex_headers = {
+        **html_no_cache_headers,
+        "X-Robots-Tag": "noindex, nofollow, noarchive",
+    }
+
     assets_dir = os.path.join(STATIC_DIR, "assets")
     if os.path.isdir(assets_dir):
         app.mount("/assets", StaticFiles(directory=assets_dir), name="static-assets")
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def spa_fallback(full_path: str, request: Request):
+        hostname = request.url.hostname or "sunbeat.pro"
+        if full_path == "robots.txt":
+            return Response(content=_robots_txt(hostname), media_type="text/plain")
+        if full_path == "sitemap.xml":
+            return Response(content=_sitemap_xml(hostname), media_type="application/xml")
+        if full_path == "feed.xml":
+            return Response(content=_academy_feed_xml(hostname), media_type="application/rss+xml")
+
         candidate = os.path.normpath(os.path.join(STATIC_DIR, full_path))
         if full_path and candidate.startswith(STATIC_DIR) and os.path.isfile(candidate):
             return FileResponse(candidate)
@@ -219,6 +425,31 @@ if os.path.isdir(STATIC_DIR):
             if branding:
                 html = _get_index_html()
                 html = _inject_og_tags(html, branding, str(request.url))
-                return HTMLResponse(content=html, status_code=200)
+                return HTMLResponse(
+                    content=html,
+                    status_code=200,
+                    headers=operational_noindex_headers,
+                )
 
-        return FileResponse(os.path.join(STATIC_DIR, "index.html"))
+        marketing_paths = {"", "academy", ACADEMY_ARTICLE_PATH.removeprefix("/")}
+        if full_path in marketing_paths:
+            marketing_path = "/" if full_path == "" else f"/{full_path}"
+            html = _inject_marketing_locale(
+                _get_index_html(),
+                hostname,
+                marketing_path,
+            )
+            return HTMLResponse(
+                content=html,
+                status_code=200,
+                headers=html_no_cache_headers,
+            )
+
+        if full_path == "concept":
+            html = _inject_marketing_locale(_get_index_html(), hostname, "/")
+            return HTMLResponse(content=html, status_code=200, headers=operational_noindex_headers)
+
+        return FileResponse(
+            os.path.join(STATIC_DIR, "index.html"),
+            headers=operational_noindex_headers,
+        )
