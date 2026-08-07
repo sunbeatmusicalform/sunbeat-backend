@@ -34,8 +34,14 @@ from app.services.airtable import (
 from app.services.airtable_company_registry import sync_company_registry_to_airtable, update_company_registry_in_airtable
 from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable, update_rights_clearance_case_in_airtable
 from app.services.email import send_edit_link_email, send_submission_summary_email
-from app.services.workspace_config import get_workflow_settings, get_email_event_config
+from app.services.edit_access import get_edit_policy, is_edit_token_authorized
+from app.services.workspace_config import (
+    get_workflow_settings,
+    get_email_event_config,
+    is_email_event_enabled,
+)
 from app.services.google_drive import sync_clearance_to_google_drive, sync_submission_to_google_drive
+from app.services.self_service_entitlements import enforce_self_service_submission_limits
 
 logger = logging.getLogger("sunbeat.submissions")
 
@@ -1852,6 +1858,17 @@ def _maybe_send_submission_summary_email(
             "recipients_count": recipients_count,
         }
 
+    if not is_email_event_enabled(
+        validated_payload.workspace_slug,
+        _summary_wf,
+        "on_summary",
+        legacy_default=True,
+    ):
+        return {
+            "status": "disabled",
+            "recipients_count": recipients_count,
+        }
+
     if not notification_emails:
         return {
             "status": "skipped",
@@ -1881,6 +1898,7 @@ def _maybe_send_submission_summary_email(
             focus_track_name=_get_focus_track_name(validated_payload),
             track_titles=[track.title for track in validated_payload.tracks],
             edit_url=edit_url,
+            workspace_slug=validated_payload.workspace_slug,
             idempotency_key=f"{submission_id}:summary",
         )
         provider_message_id = email_result.get("provider_message_id")
@@ -2134,6 +2152,7 @@ def _sync_airtable(
     )
 
     focus_track_record_id: Optional[str] = None
+    focus_track_name: Optional[str] = None
     active_track_inputs = {
         str(track.get("client_track_id") or "").strip(): track
         for track in airtable_tracks_input
@@ -2146,16 +2165,26 @@ def _sync_airtable(
         client_track_id = str(airtable_track.get("client_track_id") or "").strip()
         if active_track_inputs.get(client_track_id, {}).get("is_focus_track"):
             focus_track_record_id = airtable_track["id"]
+            focus_track_name = str(
+                active_track_inputs.get(client_track_id, {}).get("title") or ""
+            ).strip() or None
             break
 
     if not focus_track_record_id and active_airtable_tracks:
         focus_track_record_id = active_airtable_tracks[0]["id"]
+        first_client_track_id = str(
+            active_airtable_tracks[0].get("client_track_id") or ""
+        ).strip()
+        focus_track_name = str(
+            active_track_inputs.get(first_client_track_id, {}).get("title") or ""
+        ).strip() or None
 
     if focus_track_record_id:
         try:
             update_airtable_project_focus_track(
                 airtable_project_id=airtable_project["id"],
                 airtable_focus_track_id=focus_track_record_id,
+                focus_track_name=focus_track_name,
             )
         except Exception:
             logger.exception("Focus track sync failed")
@@ -2315,6 +2344,13 @@ async def load_edit_submission(edit_token: str):
         type(row.get("tracks_json")).__name__,
     )
     workflow_identity = _workflow_identity_from_row(row)
+    if not is_edit_token_authorized(
+        workflow_identity["workspace_slug"],
+        workflow_identity["workflow_type"],
+        str(row.get("id") or ""),
+        edit_token,
+    ):
+        raise HTTPException(status_code=403, detail="Edição não autorizada para esta submissão")
     track_rows = _load_submission_tracks(str(row.get("id") or ""))
     if track_rows and workflow_identity["workflow_type"] != RIGHTS_CLEARANCE_WORKFLOW_TYPE:
         track_rows = _ensure_track_rows_have_client_track_ids(track_rows)
@@ -2338,6 +2374,11 @@ def _handle_clearance_edit_resubmit(
     existing_row = _load_submission_by_edit_token(edit_token)
     if existing_row is None:
         return None  # fall through to create new submission
+
+    if not is_edit_token_authorized(
+        payload.workspace_slug, "rights_clearance", str(existing_row.get("id") or ""), edit_token
+    ):
+        raise HTTPException(status_code=403, detail="Edição não autorizada para esta submissão")
 
     submission_id = str(existing_row["id"])
     now_iso = _utc_now_iso()
@@ -2427,6 +2468,11 @@ def _handle_company_registry_edit_resubmit(
     existing_row = _load_submission_by_edit_token(edit_token)
     if existing_row is None:
         return None  # fall through to create new submission
+
+    if not is_edit_token_authorized(
+        payload.workspace_slug, "company_registry", str(existing_row.get("id") or ""), edit_token
+    ):
+        raise HTTPException(status_code=403, detail="Edição não autorizada para esta submissão")
 
     submission_id = str(existing_row["id"])
     now_iso = _utc_now_iso()
@@ -2589,6 +2635,11 @@ def create_submission(
             replay_row,
             message="Submission already processed recently.",
         )
+
+    enforce_self_service_submission_limits(
+        workspace_slug=validated_payload.workspace_slug,
+        workflow_type=_submission_workflow_type(validated_payload),
+    )
 
     now_iso = _utc_now_iso()
     submission_id = str(uuid4())
@@ -2761,6 +2812,20 @@ def create_submission(
             validated_payload.workspace_slug,
             _wf_type,
         )
+    elif not is_email_event_enabled(
+        validated_payload.workspace_slug,
+        _wf_type,
+        "on_submit",
+        legacy_default=True,
+    ):
+        email_status = "skipped_config"
+        _update_submission_email_skipped(submission_id, "email.events.on_submit.enabled=false")
+        logger.info(
+            "Post-submit email skipped by event config submission_id=%s workspace=%s workflow=%s",
+            submission_id,
+            validated_payload.workspace_slug,
+            _wf_type,
+        )
     elif (
         _wf_type in (RIGHTS_CLEARANCE_WORKFLOW_TYPE, "company_registry")
         and not supports_workflow_routed_edit_email
@@ -2858,7 +2923,12 @@ def create_submission(
         "ok": True,
         "submission_id": submission_id,
         "draft_token": _as_uuid(validated_payload.draft_token),
-        "edit_token": edit_token,
+        "edit_token": (
+            edit_token
+            if get_edit_policy(validated_payload.workspace_slug, _submission_workflow_type(validated_payload))
+            == "link_after_submit"
+            else None
+        ),
         "tracks_created": len(created_tracks),
         "message": "Submission created successfully.",
         "drive_sync": drive_sync,
@@ -2893,7 +2963,7 @@ def create_submission(
     response["email_debug"] = {
         "to_email": _get_submission_contact_email(validated_payload),
         "subject": (email_result or {}).get("subject") or email_subject,
-        "edit_url": (email_result or {}).get("edit_url") or edit_url,
+        "edit_url": (email_result or {}).get("edit_url"),
         "provider_response": (email_result or {}).get("provider_response"),
         "provider_message_id": (email_result or {}).get("provider_message_id"),
     }

@@ -59,6 +59,18 @@ class ProjectPayload(BaseModel):
     cover_file: Optional[UploadedFileRef] = None
 
 
+class TimedLyricLinePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    text: str
+    start_ms: Optional[int] = None
+    end_ms: Optional[int] = None
+    confidence: Optional[float] = None
+    status: Optional[Literal["timed", "section", "unmatched"]] = None
+    needs_review: Optional[bool] = None
+
+
 class TrackPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -68,6 +80,7 @@ class TrackPayload(BaseModel):
     title: str = Field(..., min_length=1)
     is_focus_track: Optional[bool] = False
     primary_artists: str = Field(..., min_length=1)
+    primary_artist_refs: Optional[List[Dict[str, Any]]] = None
     featured_artists: Optional[str] = None
     interpreters: Optional[str] = None
     authors: str = Field(..., min_length=1)
@@ -83,6 +96,7 @@ class TrackPayload(BaseModel):
     tiktok_snippet: Optional[str] = None
     audio_file: Optional[UploadedFileRef] = None
     lyrics: Optional[str] = None
+    timed_lyrics: Optional[List[TimedLyricLinePayload]] = None
     track_status: Optional[str] = "draft"
 
 
@@ -114,9 +128,17 @@ class ReleaseIntakeSubmissionPayload(BaseModel):
     workflow_type: WorkflowType = "release_intake"
     identification: IdentificationPayload
     project: ProjectPayload
-    tracks: List[TrackPayload]
+    tracks: List[TrackPayload] = Field(..., min_length=1)
     marketing: Optional[MarketingPayload] = None
     meta: Optional[SubmissionMetaPayload] = None
+
+    @model_validator(mode="after")
+    def validate_release_track_count(self) -> "ReleaseIntakeSubmissionPayload":
+        if self.identification.release_type == "single":
+            if len(self.tracks) != 1:
+                raise ValueError("um single deve conter exatamente uma faixa")
+            self.tracks[0].is_focus_track = True
+        return self
 
 
 class RightsClearanceRequesterPayload(BaseModel):

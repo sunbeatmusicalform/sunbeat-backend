@@ -79,6 +79,42 @@ def _submission(*, airtable_project_id: str | None = None) -> dict:
 
 
 class AirtableUpsertTests(unittest.TestCase):
+    def test_focus_track_uses_text_for_current_projects_schema(self) -> None:
+        with (
+            patch.object(airtable_module, "_table_url", return_value="https://airtable/projects"),
+            patch.object(airtable_module, "_request_json", return_value={"id": "recProject"}) as request,
+        ):
+            airtable_module.update_airtable_project_focus_track(
+                airtable_project_id="recProject",
+                airtable_focus_track_id="recTrack",
+                focus_track_name="Faixa A",
+            )
+
+        self.assertEqual(
+            request.call_args.args[2],
+            {"fields": {"Faixa Foco": "Faixa A"}},
+        )
+
+    def test_focus_track_falls_back_to_linked_record_for_legacy_schema(self) -> None:
+        with (
+            patch.object(airtable_module, "_table_url", return_value="https://airtable/projects"),
+            patch.object(
+                airtable_module,
+                "_request_json",
+                side_effect=[RuntimeError("INVALID_VALUE_FOR_COLUMN"), {"id": "recProject"}],
+            ) as request,
+        ):
+            airtable_module.update_airtable_project_focus_track(
+                airtable_project_id="recProject",
+                airtable_focus_track_id="recTrack",
+                focus_track_name="Faixa A",
+            )
+
+        self.assertEqual(
+            request.call_args_list[1].args[2],
+            {"fields": {"Faixa Foco": ["recTrack"]}},
+        )
+
     def test_upsert_airtable_project_uses_patch_when_record_exists(self) -> None:
         request_calls: list[dict] = []
 

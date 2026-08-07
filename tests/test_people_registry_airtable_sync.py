@@ -121,6 +121,7 @@ class PeopleRegistryAirtableSyncTests(unittest.TestCase):
         stored_row = {
             "id": "rec-local-3",
             "airtable_sync_status": "synced",
+            "edit_token": "edit-local-3",
             "created_at": "2026-04-17T00:00:00+00:00",
             "updated_at": "2026-04-17T00:00:01+00:00",
         }
@@ -150,6 +151,11 @@ class PeopleRegistryAirtableSyncTests(unittest.TestCase):
                 "fetch_people_registry_record_by_id",
                 return_value=stored_row,
             ),
+            patch.object(
+                people_registry_service,
+                "send_edit_link_email",
+                return_value={"provider_message_id": "msg-people-1"},
+            ) as email_mock,
         ):
             response = people_registry_service.create_people_registry_record_response(
                 payload
@@ -161,6 +167,41 @@ class PeopleRegistryAirtableSyncTests(unittest.TestCase):
         self.assertEqual(response.record.airtable_sync_status, "synced")
         sync_mock.assert_called_once()
         self.assertEqual(sync_mock.call_args.kwargs["record_id"], "rec-local-3")
+        email_mock.assert_called_once()
+        self.assertEqual(email_mock.call_args.kwargs["workflow_type"], "people_registry")
+        self.assertEqual(email_mock.call_args.kwargs["edit_token"], "edit-local-3")
+
+    def test_email_failure_does_not_roll_back_created_record(self) -> None:
+        payload = _payload()
+        stored_row = {
+            "id": "rec-local-4",
+            "airtable_sync_status": "synced",
+            "edit_token": "edit-local-4",
+            "created_at": "2026-04-17T00:00:00+00:00",
+            "updated_at": "2026-04-17T00:00:01+00:00",
+        }
+
+        with (
+            patch.object(people_registry_service, "find_people_registry_duplicate_record", return_value=None),
+            patch.object(
+                people_registry_service,
+                "persist_people_registry_prepared_payload",
+                return_value=PeopleRegistryRecordPayload(
+                    record_id="rec-local-4",
+                    airtable_sync_status="pending",
+                    created_at=stored_row["created_at"],
+                    updated_at=stored_row["created_at"],
+                ),
+            ),
+            patch.object(people_registry_service, "sync_people_registry_record_to_airtable"),
+            patch.object(people_registry_service, "fetch_people_registry_record_by_id", return_value=stored_row),
+            patch.object(people_registry_service, "send_edit_link_email", side_effect=RuntimeError("provider unavailable")),
+        ):
+            response = people_registry_service.create_people_registry_record_response(payload)
+
+        self.assertTrue(response.ok)
+        self.assertEqual(response.status, "created")
+        self.assertEqual(response.record.record_id if response.record else None, "rec-local-4")
 
 
 if __name__ == "__main__":
