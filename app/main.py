@@ -22,6 +22,7 @@ from app.modules.form_config import router as form_config_router
 from app.modules.edit_access import router as edit_access_router
 from app.modules.help_config import router as help_config_router
 from app.modules.lyrics_alignment import router as lyrics_alignment_router
+from app.modules.onboarding import router as onboarding_router
 from app.modules.people_registry import router as people_registry_router
 from app.modules.portal_branding import router as portal_branding_router
 from app.modules.portal_operations import router as portal_operations_router
@@ -69,6 +70,7 @@ app.include_router(form_config_router)
 app.include_router(edit_access_router)
 app.include_router(help_config_router)
 app.include_router(lyrics_alignment_router)
+app.include_router(onboarding_router)
 app.include_router(people_registry_router)
 app.include_router(portal_branding_router)
 app.include_router(portal_operations_router)
