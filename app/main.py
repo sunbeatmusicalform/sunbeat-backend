@@ -30,6 +30,7 @@ from app.modules.portal_session import router as portal_session_router
 from app.modules.public_leads import router as public_leads_router
 from app.modules.release_intake_history import router as release_intake_history_router
 from app.modules.release_drafts import router as drafts_router
+from app.modules.self_service_auth import router as self_service_auth_router
 from app.modules.submissions import router as submissions_router
 from app.modules.tables import router as tables_router
 from app.modules.workspaces import router as workspaces_router
@@ -77,6 +78,7 @@ app.include_router(portal_operations_router)
 app.include_router(portal_session_router)
 app.include_router(public_leads_router)
 app.include_router(release_intake_history_router)
+app.include_router(self_service_auth_router)
 app.include_router(submissions_router)
 app.include_router(tables_router)
 app.include_router(workspaces_router)
