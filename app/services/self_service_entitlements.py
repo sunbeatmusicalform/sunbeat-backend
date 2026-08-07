@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import HTTPException
 
@@ -26,16 +27,27 @@ PLAN_WORKFLOWS: dict[str, set[str] | None] = {
 }
 
 
+@dataclass(frozen=True)
+class WorkspaceEntitlements:
+    """Resolved access for a workspace after applying any explicit override."""
+
+    plan_id: str
+    max_submissions_month: int | None
+    enabled_workflow_types: set[str] | None
+    access_mode: Literal["plan", "custom"]
+
+
 def _first_row(result: Any) -> dict[str, Any] | None:
     rows = getattr(result, "data", None) or []
     return rows[0] if rows else None
 
 
-def _self_service_owner(workspace_slug: str) -> bool:
+def is_self_service_workspace(workspace_slug: str, *, client: Any = None) -> bool:
     """Return True only for accounts explicitly marked by the new signup flow."""
+    database = client or supabase
     try:
         membership = _first_row(
-            supabase.table("workspace_users")
+            database.table("workspace_users")
             .select("user_id")
             .eq("workspace_slug", workspace_slug)
             .eq("role", "owner")
@@ -45,7 +57,7 @@ def _self_service_owner(workspace_slug: str) -> bool:
         if not membership:
             return False
 
-        auth_result = supabase.auth.admin.get_user_by_id(str(membership["user_id"]))
+        auth_result = database.auth.admin.get_user_by_id(str(membership["user_id"]))
         user = getattr(auth_result, "user", None)
         metadata = getattr(user, "user_metadata", None) or {}
         return metadata.get("self_service") is True
@@ -58,9 +70,17 @@ def _self_service_owner(workspace_slug: str) -> bool:
         return False
 
 
-def _load_plan(workspace_slug: str) -> tuple[str, int | None, set[str] | None]:
+def load_workspace_entitlements(
+    workspace_slug: str, *, client: Any = None
+) -> WorkspaceEntitlements:
+    """Resolve the canonical plan plus tenant-specific commercial overrides.
+
+    This is intentionally shared by submission enforcement and MotoSchema so the
+    portal can never advertise a different access map from the API guard.
+    """
+    database = client or supabase
     workspace = _first_row(
-        supabase.table("workspaces")
+        database.table("workspaces")
         .select("plan_id, plans(submissions_month)")
         .eq("slug", workspace_slug)
         .limit(1)
@@ -79,7 +99,7 @@ def _load_plan(workspace_slug: str) -> tuple[str, int | None, set[str] | None]:
 
     try:
         override = _first_row(
-            supabase.table("workspace_plan_overrides")
+            database.table("workspace_plan_overrides")
             .select("max_submissions_month, enabled_workflow_types")
             .eq("workspace_slug", workspace_slug)
             .limit(1)
@@ -89,23 +109,41 @@ def _load_plan(workspace_slug: str) -> tuple[str, int | None, set[str] | None]:
         override = None
         logger.warning("Plan override unavailable workspace=%s", workspace_slug, exc_info=True)
 
+    override_applied = False
     if override:
         if override.get("max_submissions_month") is not None:
             limit = int(override["max_submissions_month"])
+            override_applied = True
         if isinstance(override.get("enabled_workflow_types"), list):
             workflows = {
                 str(value).strip()
                 for value in override["enabled_workflow_types"]
                 if str(value).strip()
             }
+            override_applied = True
 
-    return plan_id, limit, workflows
+    return WorkspaceEntitlements(
+        plan_id=plan_id,
+        max_submissions_month=limit,
+        enabled_workflow_types=workflows,
+        access_mode="custom" if override_applied else "plan",
+    )
+
+
+def _load_plan(workspace_slug: str) -> tuple[str, int | None, set[str] | None]:
+    """Backward-compatible tuple used by older callers and tests."""
+    resolved = load_workspace_entitlements(workspace_slug)
+    return (
+        resolved.plan_id,
+        resolved.max_submissions_month,
+        resolved.enabled_workflow_types,
+    )
 
 
 def enforce_self_service_submission_limits(
     *, workspace_slug: str, workflow_type: str
 ) -> None:
-    if not _self_service_owner(workspace_slug):
+    if not is_self_service_workspace(workspace_slug):
         return
 
     _plan_id, limit, workflows = _load_plan(workspace_slug)

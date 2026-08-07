@@ -100,10 +100,41 @@ class _FakeTable:
 
 
 class _FakeSupabase:
-    def __init__(self, *, audit_available: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        audit_available: bool = True,
+        self_service: bool = True,
+        override: dict | None = None,
+    ) -> None:
         self.audit_available = audit_available
+        self.auth = SimpleNamespace(
+            admin=SimpleNamespace(
+                get_user_by_id=lambda _user_id: SimpleNamespace(
+                    user=SimpleNamespace(user_metadata={"self_service": self_service})
+                )
+            )
+        )
         self.tables: dict[str, list[dict]] = {
-            "workspaces": [{"slug": "demo", "name": "Demo Records", "plan_id": "free"}],
+            "workspaces": [
+                {
+                    "slug": "demo",
+                    "name": "Demo Records",
+                    "plan_id": "free",
+                    "plans": {"submissions_month": 50},
+                }
+            ],
+            "workspace_users": [
+                {"workspace_slug": "demo", "user_id": "demo-owner", "role": "owner"}
+            ],
+            "workspace_plan_overrides": [override] if override else [],
+            "workspace_branding": [
+                {
+                    "workspace_slug": "demo",
+                    "workspace_name": "Demo Records",
+                    "enabled_workflows": ["release_intake"],
+                }
+            ],
             "workspace_workflow_settings": [],
             "setup_ai_action_audit": [],
         }
@@ -155,6 +186,7 @@ def test_free_plan_preview_filters_workflows_and_explains_retention() -> None:
     data = response.json()["data"]
     assert data["enabledWorkflows"] == ["release_intake"]
     assert "60 dias" in data["warnings"][0]
+    assert data["warningCodes"] == ["free_asset_retention_60_days"]
     assert data["previewToken"]
     assert fake.tables["setup_ai_action_audit"][0]["status"] == "succeeded"
 
@@ -184,7 +216,86 @@ def test_apply_requires_matching_preview_and_persists_profile() -> None:
     onboarding_value = settings_rows[0]["extra_settings"]["onboarding"]
     assert onboarding_value["profile"]["primaryGoal"] == "Receber lançamentos completos."
     assert onboarding_value["enabled_workflows"] == ["release_intake"]
+    assert onboarding_value["provisioning"]["mode"] == "self_service"
+    assert onboarding_value["provisioning"]["integrations"] == {
+        "airtable": "pending_authorization",
+        "google_drive": "pending_authorization",
+    }
+    assert fake.tables["workspace_branding"][0]["enabled_workflows"] == ["release_intake"]
     assert fake.tables["setup_ai_action_audit"][-1]["status"] == "succeeded"
+
+
+def test_custom_override_is_the_same_access_map_used_by_motoschema() -> None:
+    fake = _FakeSupabase(
+        override={
+            "workspace_slug": "demo",
+            "max_submissions_month": None,
+            "enabled_workflow_types": [
+                "release_intake",
+                "rights_clearance",
+                "company_registry",
+            ],
+        }
+    )
+    client, headers = _client(fake)
+
+    response = client.get("/workspaces/demo/onboarding", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["planId"] == "free"
+    assert data["accessMode"] == "custom"
+    assert data["allowedWorkflowTypes"] == [
+        "release_intake",
+        "rights_clearance",
+        "company_registry",
+    ]
+
+
+def test_managed_workspace_updates_profile_without_touching_active_workflows() -> None:
+    fake = _FakeSupabase(self_service=False)
+    fake.tables["workspace_workflow_settings"].append(
+        {
+            "workspace_slug": "demo",
+            "workflow_type": "rights_clearance",
+            "extra_settings": {"airtable": {"enabled": True}},
+        }
+    )
+    original = deepcopy(fake.tables["workspace_branding"])
+    client, headers = _client(fake)
+    profile = _profile()
+    initial_response = client.get("/workspaces/demo/onboarding", headers=headers)
+    assert "rights_clearance" in initial_response.json()["data"]["allowedWorkflowTypes"]
+    preview_response = client.post(
+        "/workspaces/demo/onboarding",
+        headers=headers,
+        json={"operation": "preview_patch", "profile": profile},
+    )
+    preview = preview_response.json()["data"]
+
+    assert preview["provisioningMode"] == "profile_only"
+    assert any("não alterará" in warning for warning in preview["warnings"])
+
+    apply_response = client.post(
+        "/workspaces/demo/onboarding",
+        headers=headers,
+        json={
+            "operation": "apply_patch",
+            "profile": profile,
+            "preview_token": preview["previewToken"],
+        },
+    )
+
+    assert apply_response.status_code == 200
+    assert fake.tables["workspace_branding"] == original
+    onboarding_row = next(
+        row
+        for row in fake.tables["workspace_workflow_settings"]
+        if row["workflow_type"] == onboarding.ONBOARDING_WORKFLOW_TYPE
+    )
+    onboarding_value = onboarding_row["extra_settings"]["onboarding"]
+    assert onboarding_value["provisioning"]["mode"] == "profile_only"
+    assert onboarding_value["provisioning"]["workflow_status"] == "unchanged"
 
 
 def test_apply_is_blocked_when_audit_is_unavailable() -> None:
