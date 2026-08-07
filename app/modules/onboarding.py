@@ -22,7 +22,11 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.core.database import supabase
 from app.modules.portal_session import require_portal_session
 from app.modules.workflow_registry import list_registered_workflows
-from app.services.self_service_entitlements import PLAN_WORKFLOWS
+from app.services.self_service_entitlements import (
+    WorkspaceEntitlements,
+    is_self_service_workspace,
+    load_workspace_entitlements,
+)
 
 logger = logging.getLogger("sunbeat.onboarding")
 
@@ -76,9 +80,9 @@ def _active_workflows() -> list[str]:
     ]
 
 
-def _allowed_workflows(plan_id: str) -> list[str]:
+def _allowed_workflows(entitlements: WorkspaceEntitlements) -> list[str]:
     active = _active_workflows()
-    configured = PLAN_WORKFLOWS.get(plan_id, {"release_intake"})
+    configured = entitlements.enabled_workflow_types
     return active if configured is None else [item for item in active if item in configured]
 
 
@@ -96,7 +100,7 @@ def _unique_allowed(values: Any, allowed: set[str]) -> list[str]:
 def _normalize_profile(
     profile: OnboardingProfile | Dict[str, Any] | None,
     *,
-    plan_id: str,
+    allowed_workflows: list[str],
     fallback_workflows: Optional[list[str]] = None,
 ) -> Dict[str, Any]:
     if isinstance(profile, OnboardingProfile):
@@ -106,7 +110,7 @@ def _normalize_profile(
     else:
         source = {}
 
-    allowed = _allowed_workflows(plan_id)
+    allowed = allowed_workflows
     allowed_set = set(allowed)
     requested = _unique_allowed(source.get("workflowTypes"), allowed_set)
     fallback = _unique_allowed(fallback_workflows or [], allowed_set)
@@ -214,21 +218,71 @@ def _load_settings(workspace_slug: str) -> Optional[Dict[str, Any]]:
         raise HTTPException(status_code=503, detail="onboarding configuration is unavailable") from exc
 
 
+def _load_provisioned_workflows(workspace_slug: str) -> list[str]:
+    try:
+        row = _first_row(
+            supabase.table("workspace_branding")
+            .select("enabled_workflows")
+            .eq("workspace_slug", workspace_slug)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("onboarding branding lookup failed workspace=%s: %s", workspace_slug, exc)
+        return []
+    values = row.get("enabled_workflows") if row else []
+    return [str(value) for value in values] if isinstance(values, list) else []
+
+
+def _load_operational_workflows(workspace_slug: str) -> list[str]:
+    """Read existing workflow rows without changing or inferring their settings."""
+    try:
+        result = (
+            supabase.table("workspace_workflow_settings")
+            .select("workflow_type")
+            .eq("workspace_slug", workspace_slug)
+            .execute()
+        )
+    except Exception as exc:
+        logger.warning("onboarding workflow inventory failed workspace=%s: %s", workspace_slug, exc)
+        return []
+    configured = {
+        str(row.get("workflow_type") or "")
+        for row in (getattr(result, "data", None) or [])
+        if row.get("workflow_type") != ONBOARDING_WORKFLOW_TYPE
+    }
+    return [workflow for workflow in _active_workflows() if workflow in configured]
+
+
 def _initial_data(workspace_slug: str) -> Dict[str, Any]:
     workspace = _load_workspace(workspace_slug)
-    plan_id = str(workspace.get("plan_id") or "free")
-    allowed = _allowed_workflows(plan_id)
+    entitlements = load_workspace_entitlements(workspace_slug, client=supabase)
+    plan_id = entitlements.plan_id
+    allowed = _allowed_workflows(entitlements)
+    self_service = is_self_service_workspace(workspace_slug, client=supabase)
+    provisioned = _load_provisioned_workflows(workspace_slug)
+    if not self_service:
+        managed_access = set(allowed) | set(provisioned) | set(_load_operational_workflows(workspace_slug))
+        allowed = [workflow for workflow in _active_workflows() if workflow in managed_access]
     row = _load_settings(workspace_slug) or {}
     extra = row.get("extra_settings") if isinstance(row.get("extra_settings"), dict) else {}
     onboarding = extra.get("onboarding") if isinstance(extra.get("onboarding"), dict) else {}
     stored_profile = onboarding.get("profile") if isinstance(onboarding.get("profile"), dict) else {}
-    profile = _normalize_profile(stored_profile, plan_id=plan_id, fallback_workflows=allowed)
+    profile = _normalize_profile(
+        stored_profile,
+        allowed_workflows=allowed,
+        fallback_workflows=allowed,
+    )
     return {
         "workspaceSlug": workspace_slug,
         "workspaceName": str(workspace.get("name") or workspace_slug),
         "planId": plan_id,
+        "accessMode": entitlements.access_mode,
+        "selfService": self_service,
+        "provisioningMode": "self_service" if self_service else "profile_only",
         "allowedWorkflowTypes": allowed,
         "enabledWorkflowTypes": profile["workflowTypes"],
+        "provisionedWorkflowTypes": provisioned,
         "profile": profile,
         "completedAt": onboarding.get("completed_at") if isinstance(onboarding.get("completed_at"), str) else None,
     }
@@ -238,19 +292,30 @@ def _preview(workspace_slug: str, profile: OnboardingProfile) -> Dict[str, Any]:
     current = _initial_data(workspace_slug)
     normalized = _normalize_profile(
         profile,
-        plan_id=current["planId"],
+        allowed_workflows=current["allowedWorkflowTypes"],
         fallback_workflows=current["enabledWorkflowTypes"],
     )
     token, expires_at = _issue_preview_token(workspace_slug, normalized)
     warnings = []
-    if current["planId"] == "free":
+    warning_codes = []
+    if current["selfService"] and current["planId"] == "free":
+        warning_codes.append("free_asset_retention_60_days")
         warnings.append(
             f"No plano Free, os assets ficam disponíveis por {FREE_ASSET_RETENTION_DAYS} dias; "
             "os metadados e a auditoria permanecem registrados."
         )
+    if current["provisioningMode"] == "profile_only":
+        warning_codes.append("managed_profile_only")
+        warnings.append(
+            "Este é um workspace gerenciado. O MotoSchema salvará apenas o perfil e não alterará "
+            "formulários, integrações ou workflows já ativos."
+        )
     return {
         "workspaceSlug": workspace_slug,
         "planId": current["planId"],
+        "accessMode": current["accessMode"],
+        "selfService": current["selfService"],
+        "provisioningMode": current["provisioningMode"],
         "profile": normalized,
         "enabledWorkflows": normalized["workflowTypes"],
         "changes": [
@@ -277,8 +342,18 @@ def _preview(workspace_slug: str, profile: OnboardingProfile) -> Dict[str, Any]:
                 "title": "Governança do MotoSchema",
                 "detail": "Prévia assinada, confirmação humana e registro de auditoria antes da aplicação.",
             },
+            {
+                "key": "provisioning",
+                "title": "Aplicação segura",
+                "detail": (
+                    "Os workflows selecionados serão ativados; integrações externas aguardam autorização."
+                    if current["provisioningMode"] == "self_service"
+                    else "Somente o perfil será atualizado; a operação existente permanecerá intacta."
+                ),
+            },
         ],
         "warnings": warnings,
+        "warningCodes": warning_codes,
         "previewToken": token,
         "expiresAt": expires_at,
     }
@@ -393,8 +468,26 @@ async def configure_onboarding(
         "preview_digest": _profile_digest(slug, preview["profile"]),
         "completed_at": completed_at,
         "completed_by": "portal_session",
+        "provisioning": {
+            "mode": preview["provisioningMode"],
+            "workflow_status": (
+                "active" if preview["provisioningMode"] == "self_service" else "unchanged"
+            ),
+            "integrations": {
+                integration: "pending_authorization"
+                for integration in preview["profile"]["integrations"]
+            },
+            "applied_at": completed_at,
+        },
     }
     try:
+        if preview["provisioningMode"] == "self_service":
+            (
+                supabase.table("workspace_branding")
+                .update({"enabled_workflows": preview["enabledWorkflows"]})
+                .eq("workspace_slug", slug)
+                .execute()
+            )
         (
             supabase.table("workspace_workflow_settings")
             .upsert(

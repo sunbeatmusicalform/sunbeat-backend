@@ -88,3 +88,21 @@ def test_free_self_service_blocks_monthly_limit(monkeypatch):
             workspace_slug="demo", workflow_type="release_intake"
         )
     assert exc.value.status_code == 429
+
+
+def test_workspace_override_resolves_custom_workflows_and_limit(monkeypatch):
+    fake = _Supabase({
+        "workspaces": [_result([{"plan_id": "free", "plans": {"submissions_month": 50}}])],
+        "workspace_plan_overrides": [_result([{
+            "max_submissions_month": 500,
+            "enabled_workflow_types": ["release_intake", "rights_clearance"],
+        }])],
+    })
+    monkeypatch.setattr(self_service_entitlements, "supabase", fake)
+
+    resolved = self_service_entitlements.load_workspace_entitlements("demo")
+
+    assert resolved.plan_id == "free"
+    assert resolved.access_mode == "custom"
+    assert resolved.max_submissions_month == 500
+    assert resolved.enabled_workflow_types == {"release_intake", "rights_clearance"}
