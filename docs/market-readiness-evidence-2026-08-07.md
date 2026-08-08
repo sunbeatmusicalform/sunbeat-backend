@@ -55,7 +55,7 @@ The QA mock E2E test uses the isolated slug `qa-isolated-records` and covers:
 | 5xx / health / readiness | Baseline ready in branch | Request IDs, 5xx logs, liveness plus service-role/database/schema readiness tests; low-frequency GitHub monitor checks both domains and backend readiness | Monitor starts only after approved merge; six-hour cadence is not real-time and no 5xx-rate alert exists |
 | CORS / headers / secrets | QA verified | QA returned CSP/HSTS/request ID and security headers; denied an untrusted origin and allowed `sunbeat.pro`; current-tree scan found placeholders/test values only | Alerting and legacy Supabase advisor findings remain separate work |
 | Backup / restore | Backups verified; restore deferred | Eight completed daily physical backups listed for 2026-08-01 through 2026-08-08; WAL-G active, PITR disabled | Felipe deferred the paid isolated clone due budget; restore is not tested and no clone was created |
-| Terms / Privacy / LGPD | Blocked by legal/content decision | Acceptance versions stored and checklist documented | Actual bilingual legal documents/routes are absent |
+| Terms / Privacy / LGPD | Implemented in branch; legal review pending | Bilingual `/terms` and `/privacy` routes, signup links, controller identity/CNPJ, Recife–PE and public LGPD email; acceptance versions match | Professional legal approval and isolated QA data-subject request drill remain open |
 | Commit / PR | Draft PR #59 open | Small thematic implementation commits and this evidence update are published for review | No merge or production deploy is authorized |
 
 ## Manual QA credential step — completed 2026-08-08
@@ -97,6 +97,20 @@ merge, and Fly production deploy.
   routes and the Fly backend `/readiness` route. It consumes included Actions
   usage only after merge, runs every six hours, and is not claimed as real-time
   5xx monitoring.
+- Added bilingual Terms of Use and Privacy Policy routes to the reviewed
+  frontend bundle. Felipe designated Good Corporation Produções e Serviços de
+  Informações na Internet EIRELI, CNPJ 35.231.111/0001-93, Recife–PE, Brazil,
+  and `contatofelipefonsek@gmail.com` for the controller identity and public
+  LGPD contact. Signup now links to both versioned documents before acceptance.
+  Professional legal review is still required; no legal approval is claimed.
+- Frontend production build and targeted ESLint for the four changed source
+  files passed. Browser QA verified Portuguese Privacy, English Terms, signup
+  links, official Sunbeat branding, and zero console errors. The repository-wide
+  lint still reports 18 pre-existing findings in unchanged shared UI/portal
+  files, so a clean full lint is not claimed for this update.
+- Backend suite passed with `215 passed` on Python 3.12, including three new
+  legal-route tests for localized titles, canonical URLs, public indexing and
+  Portuguese aliases.
 - Current-tree secret scan found empty `.env.example` fields, CI placeholders,
   and test-only values; it did not find a deployed credential value. Fly and
   Supabase secret values were not read.

@@ -302,7 +302,15 @@ def _inject_marketing_locale(html: str, hostname: str, path: str = "/") -> str:
 
     if is_brazil:
         lang = "pt-BR"
-        if normalized_path == "/academy":
+        if normalized_path in {"/terms", "/termos"}:
+            title = "Termos de Uso | Sunbeat"
+            description = "Termos que regulam o acesso e o uso da plataforma Sunbeat."
+            page_type = "website"
+        elif normalized_path in {"/privacy", "/privacidade"}:
+            title = "Política de Privacidade | Sunbeat"
+            description = "Como a Sunbeat trata dados pessoais, protege informações e atende direitos previstos na LGPD."
+            page_type = "website"
+        elif normalized_path == "/academy":
             title = "Sunbeat Academy | Operações para lançamentos musicais"
             description = "Guias práticos para labels, managers e equipes criativas criarem fluxos melhores de lançamento, metadados confiáveis e intake de arquivos."
             page_type = "website"
@@ -316,7 +324,15 @@ def _inject_marketing_locale(html: str, hostname: str, path: str = "/") -> str:
             page_type = "website"
     else:
         lang = "en"
-        if normalized_path == "/academy":
+        if normalized_path in {"/terms", "/termos"}:
+            title = "Terms of Use | Sunbeat"
+            description = "Terms governing access to and use of the Sunbeat platform."
+            page_type = "website"
+        elif normalized_path in {"/privacy", "/privacidade"}:
+            title = "Privacy Policy | Sunbeat"
+            description = "How Sunbeat processes personal data, protects information, and supports privacy rights."
+            page_type = "website"
+        elif normalized_path == "/academy":
             title = "Sunbeat Academy | Music release operations"
             description = "Practical guides for labels, managers and creative teams building clearer music release workflows, better metadata and reliable file intake."
             page_type = "website"
@@ -517,6 +533,28 @@ if os.path.isdir(STATIC_DIR):
         if full_path == "feed.xml":
             return Response(content=_academy_feed_xml(hostname), media_type="application/rss+xml")
 
+        marketing_paths = {
+            "",
+            "academy",
+            ACADEMY_ARTICLE_PATH.removeprefix("/"),
+            "terms",
+            "termos",
+            "privacy",
+            "privacidade",
+        }
+        if full_path in marketing_paths:
+            marketing_path = "/" if full_path == "" else f"/{full_path}"
+            html = _inject_marketing_locale(
+                _get_index_html(),
+                hostname,
+                marketing_path,
+            )
+            return HTMLResponse(
+                content=html,
+                status_code=200,
+                headers=html_no_cache_headers,
+            )
+
         candidate = os.path.normpath(os.path.join(STATIC_DIR, full_path))
         if full_path and candidate.startswith(STATIC_DIR) and os.path.isfile(candidate):
             return FileResponse(candidate)
@@ -546,20 +584,6 @@ if os.path.isdir(STATIC_DIR):
                     status_code=200,
                     headers=operational_noindex_headers,
                 )
-
-        marketing_paths = {"", "academy", ACADEMY_ARTICLE_PATH.removeprefix("/")}
-        if full_path in marketing_paths:
-            marketing_path = "/" if full_path == "" else f"/{full_path}"
-            html = _inject_marketing_locale(
-                _get_index_html(),
-                hostname,
-                marketing_path,
-            )
-            return HTMLResponse(
-                content=html,
-                status_code=200,
-                headers=html_no_cache_headers,
-            )
 
         if full_path == "concept":
             html = _inject_marketing_locale(_get_index_html(), hostname, "/")

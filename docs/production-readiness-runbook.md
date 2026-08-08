@@ -134,13 +134,20 @@ or a schedule.
 - [x] Rate-limit identifiers and draft tokens are stored as keyed/hash values,
       not raw identifiers.
 - [x] Free asset deletion preserves operational metadata and audit history.
-- [ ] Felipe/legal must approve and publish the actual Terms of Use and Privacy
-      Policy at stable URLs in English and Portuguese. The signup currently
-      names them but has no published document routes in this repository.
-- [ ] Define data-controller identity, DPO/contact channel, lawful bases,
-      subprocessors (Fly.io, Supabase, Resend, Airtable, Google), international
-      transfer language, data-subject request process, and retention periods for
-      leads, auth logs, submissions, and audit logs.
+- [x] The branch contains bilingual Terms of Use and Privacy Policy at stable
+      `/terms` and `/privacy` routes, with Portuguese aliases, and the signup
+      links to both documents before acceptance. Production publication still
+      requires the approved merge and Fly deploy.
+- [x] The documents identify Good Corporation Produções e Serviços de
+      Informações na Internet EIRELI, CNPJ 35.231.111/0001-93, Recife–PE,
+      Brazil, and `contatofelipefonsek@gmail.com` as the public LGPD channel
+      designated by Felipe on 2026-08-08. They describe lawful bases, processor
+      roles, suppliers, international transfers, data-subject requests, Free
+      asset expiry, and category-specific retention criteria without claiming
+      an unimplemented deletion schedule.
+- [ ] Obtain professional legal review of both documents before describing
+      them as legally approved. The implementation is an operational draft,
+      not a legal opinion.
 - [ ] Execute and evidence a deletion/access request in an isolated QA tenant.
 
 ## QA E2E boundary
