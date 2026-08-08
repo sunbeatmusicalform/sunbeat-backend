@@ -5,13 +5,16 @@ import logging
 import os
 import re
 import traceback
+import uuid
 from html import escape
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from app.core.config import settings
 from app.core.database import supabase
 from app.modules.admin_config import router as admin_config_router
 from app.modules.ai_gateway import router as ai_gateway_router
@@ -46,6 +49,30 @@ app = FastAPI(
     description="Infrastructure for music release metadata",
 )
 
+
+def _trusted_hosts(additional_hosts: str = "") -> list[str]:
+    hosts = [
+        "sunbeat.pro",
+        "*.sunbeat.pro",
+        "sunbeat.com.br",
+        "*.sunbeat.com.br",
+        "sunbeat-backend.fly.dev",
+        "localhost",
+        "127.0.0.1",
+        "testserver",
+    ]
+    for value in additional_hosts.split(","):
+        host = value.strip().lower()
+        if host and host not in hosts and re.fullmatch(r"(?:\*\.)?[a-z0-9.-]+", host):
+            hosts.append(host)
+    return hosts
+
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=_trusted_hosts(settings.ADDITIONAL_ALLOWED_HOSTS),
+)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -58,9 +85,49 @@ app.add_middleware(
         "https://sunbeat-frontend.fly.dev",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_headers=[
+        "Accept",
+        "Authorization",
+        "Content-Type",
+        "Idempotency-Key",
+        "X-Admin-Token",
+        "X-Portal-Token",
+    ],
 )
+
+
+@app.middleware("http")
+async def security_and_observability_headers(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+        "form-action 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://use.typekit.net; "
+        "img-src 'self' data: blob: https:; media-src 'self' blob: https:; "
+        "font-src 'self' data: https://use.typekit.net https://p.typekit.net; "
+        "connect-src 'self' https://sunbeat-backend.fly.dev https://*.supabase.co"
+    )
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if request.url.scheme == "https" or forwarded_proto == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if request.url.path.startswith(("/auth", "/workspaces")):
+        response.headers["Cache-Control"] = "no-store"
+    if response.status_code >= 500:
+        logging.getLogger("sunbeat.errors").error(
+            "http_5xx request_id=%s method=%s path=%s status=%s",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+        )
+    return response
 
 app.include_router(admin_config_router)
 app.include_router(drafts_router)
@@ -88,16 +155,61 @@ app.include_router(ai_gateway_router)
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     tb = traceback.format_exc()
-    logging.getLogger("sunbeat.errors").error("Unhandled exception: %s\n%s", exc, tb)
+    request_id = getattr(request.state, "request_id", "unknown")
+    logging.getLogger("sunbeat.errors").error(
+        "Unhandled exception request_id=%s method=%s path=%s: %s\n%s",
+        request_id,
+        request.method,
+        request.url.path,
+        exc,
+        tb,
+    )
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error."},
+        headers={"X-Request-ID": request_id},
     )
 
 
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "sunbeat-api"}
+
+
+@app.get("/readiness")
+def readiness():
+    if settings.SELF_SERVICE_SIGNUP_ENABLED and not settings.SUPABASE_SERVICE_ROLE_KEY:
+        logging.getLogger("sunbeat.readiness").error(
+            "self-service readiness failed: explicit service-role key is missing"
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "service": "sunbeat-api",
+                "configuration": "unavailable",
+            },
+        )
+    try:
+        supabase.table("workspaces").select("slug").limit(1).execute()
+        if settings.SELF_SERVICE_SIGNUP_ENABLED:
+            # Read-only schema gate: the release must not become ready until the
+            # reviewed security/retention migrations have been applied.
+            for table in (
+                "self_service_magic_links",
+                "portal_sessions",
+                "public_rate_limits",
+                "public_leads",
+                "asset_retention_records",
+            ):
+                supabase.table(table).select("*").limit(1).execute()
+    except Exception as exc:
+        logging.getLogger("sunbeat.readiness").error("database readiness failed: %s", type(exc).__name__)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "service": "sunbeat-api", "database": "unavailable"},
+        )
+    return {"status": "ready", "service": "sunbeat-api", "database": "reachable"}
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +302,15 @@ def _inject_marketing_locale(html: str, hostname: str, path: str = "/") -> str:
 
     if is_brazil:
         lang = "pt-BR"
-        if normalized_path == "/academy":
+        if normalized_path in {"/terms", "/termos"}:
+            title = "Termos de Uso | Sunbeat"
+            description = "Termos que regulam o acesso e o uso da plataforma Sunbeat."
+            page_type = "website"
+        elif normalized_path in {"/privacy", "/privacidade"}:
+            title = "Política de Privacidade | Sunbeat"
+            description = "Como a Sunbeat trata dados pessoais, protege informações e atende direitos previstos na LGPD."
+            page_type = "website"
+        elif normalized_path == "/academy":
             title = "Sunbeat Academy | Operações para lançamentos musicais"
             description = "Guias práticos para labels, managers e equipes criativas criarem fluxos melhores de lançamento, metadados confiáveis e intake de arquivos."
             page_type = "website"
@@ -204,7 +324,15 @@ def _inject_marketing_locale(html: str, hostname: str, path: str = "/") -> str:
             page_type = "website"
     else:
         lang = "en"
-        if normalized_path == "/academy":
+        if normalized_path in {"/terms", "/termos"}:
+            title = "Terms of Use | Sunbeat"
+            description = "Terms governing access to and use of the Sunbeat platform."
+            page_type = "website"
+        elif normalized_path in {"/privacy", "/privacidade"}:
+            title = "Privacy Policy | Sunbeat"
+            description = "How Sunbeat processes personal data, protects information, and supports privacy rights."
+            page_type = "website"
+        elif normalized_path == "/academy":
             title = "Sunbeat Academy | Music release operations"
             description = "Practical guides for labels, managers and creative teams building clearer music release workflows, better metadata and reliable file intake."
             page_type = "website"
@@ -405,6 +533,28 @@ if os.path.isdir(STATIC_DIR):
         if full_path == "feed.xml":
             return Response(content=_academy_feed_xml(hostname), media_type="application/rss+xml")
 
+        marketing_paths = {
+            "",
+            "academy",
+            ACADEMY_ARTICLE_PATH.removeprefix("/"),
+            "terms",
+            "termos",
+            "privacy",
+            "privacidade",
+        }
+        if full_path in marketing_paths:
+            marketing_path = "/" if full_path == "" else f"/{full_path}"
+            html = _inject_marketing_locale(
+                _get_index_html(),
+                hostname,
+                marketing_path,
+            )
+            return HTMLResponse(
+                content=html,
+                status_code=200,
+                headers=html_no_cache_headers,
+            )
+
         candidate = os.path.normpath(os.path.join(STATIC_DIR, full_path))
         if full_path and candidate.startswith(STATIC_DIR) and os.path.isfile(candidate):
             return FileResponse(candidate)
@@ -434,20 +584,6 @@ if os.path.isdir(STATIC_DIR):
                     status_code=200,
                     headers=operational_noindex_headers,
                 )
-
-        marketing_paths = {"", "academy", ACADEMY_ARTICLE_PATH.removeprefix("/")}
-        if full_path in marketing_paths:
-            marketing_path = "/" if full_path == "" else f"/{full_path}"
-            html = _inject_marketing_locale(
-                _get_index_html(),
-                hostname,
-                marketing_path,
-            )
-            return HTMLResponse(
-                content=html,
-                status_code=200,
-                headers=html_no_cache_headers,
-            )
 
         if full_path == "concept":
             html = _inject_marketing_locale(_get_index_html(), hostname, "/")

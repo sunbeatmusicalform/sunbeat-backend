@@ -20,6 +20,7 @@ from app.core.database import supabase
 from app.modules.portal_session import require_portal_session
 from app.services.airtable import _base_id, _request_json, _table_url
 from app.services.people_registry_invites import list_people_registry_invites_response
+from app.services.workspace_config import get_workflow_settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/workspaces", tags=["portal-operations"])
@@ -294,12 +295,22 @@ async def get_portal_data(
     slug = workspace_slug.strip().lower()
     submissions = _submission_rows(slug)
     airtable_error: Optional[str] = None
-    try:
-        live = _airtable_data()
-        source = "airtable"
-    except Exception as exc:
-        logger.exception("portal operations: Airtable unavailable")
-        airtable_error = "Airtable temporariamente indisponível"
+    workflow_settings = get_workflow_settings(slug, "release_intake")
+    # The current Airtable reader targets Atabaque's managed base. It must not
+    # be called for another tenant until a tenant-scoped reader is available.
+    airtable_allowed = slug == "atabaque" and bool(
+        workflow_settings.get("airtable_sync_enabled")
+    )
+    if airtable_allowed:
+        try:
+            live = _airtable_data()
+            source = "airtable"
+        except Exception:
+            logger.exception("portal operations: Airtable unavailable workspace=%s", slug)
+            airtable_error = "Airtable temporariamente indisponível"
+            live = {"projects": _fallback_projects(submissions), "stages": [], "demands": []}
+            source = "supabase"
+    else:
         live = {"projects": _fallback_projects(submissions), "stages": [], "demands": []}
         source = "supabase"
 
@@ -347,7 +358,12 @@ async def get_portal_data(
         "email_activity": email_activity[:50],
         "sync_summary": {"total": len(sync_rows), "synced": synced, "failed": failed},
         "integrations": {
-            "airtable": {"configured": bool(settings.AIRTABLE_API_KEY and settings.AIRTABLE_BASE_ID), "status": "online" if source == "airtable" else "degraded"},
+            "airtable": {
+                "configured": bool(
+                    airtable_allowed and settings.AIRTABLE_API_KEY and settings.AIRTABLE_BASE_ID
+                ),
+                "status": "online" if source == "airtable" else "disabled" if not airtable_allowed else "degraded",
+            },
             "drive": {"configured": bool(settings.GOOGLE_DRIVE_ENABLED and settings.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON), "status": "online" if settings.GOOGLE_DRIVE_ENABLED else "disabled"},
             "email": {"configured": bool(settings.RESEND_API_KEY), "status": "online" if settings.RESEND_API_KEY else "disabled"},
             "lyrics_ai": {"configured": bool(getattr(settings, "GEMINI_LYRICS_API_KEY", None)), "status": "online" if getattr(settings, "GEMINI_LYRICS_API_KEY", None) else "disabled"},

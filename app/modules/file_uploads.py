@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import mimetypes
+import hashlib
 import re
 import time
 from pathlib import PurePosixPath
@@ -13,6 +14,7 @@ from pydantic import BaseModel
 
 from app.core.config import settings
 from app.core.database import supabase
+from app.services.asset_retention import assert_asset_not_expired, register_asset
 
 
 router = APIRouter(tags=["file_uploads"])
@@ -156,6 +158,16 @@ async def sign_upload(request: Request, payload: SignedUploadRequest) -> dict:
         )
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Falha ao preparar upload: {exc}") from exc
+    register_asset(
+        workspace_slug=payload.workspace_slug,
+        draft_token=payload.draft_token,
+        storage_bucket=bucket,
+        storage_path=storage_path,
+        file_name=payload.file_name,
+        mime_type=payload.mime_type,
+        size_bytes=payload.file_size,
+        status="pending_upload",
+    )
     return {
         "ok": True,
         "signed_upload_url": signed["signed_url"],
@@ -207,6 +219,26 @@ async def upload_file(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Falha ao armazenar arquivo: {exc}") from exc
 
+    try:
+        register_asset(
+            workspace_slug=workspace_slug,
+            draft_token=draft_token,
+            storage_bucket=bucket,
+            storage_path=storage_path,
+            file_name=file.filename or file_name,
+            mime_type=mime_type,
+            size_bytes=len(content),
+            status="uploaded",
+            content_sha256=hashlib.sha256(content).hexdigest(),
+        )
+    except HTTPException:
+        # Do not leave an untracked Free asset behind when the registry fails.
+        try:
+            await run_in_threadpool(supabase.storage.from_(bucket).remove, [storage_path])
+        except Exception:
+            pass
+        raise
+
     return {
         "ok": True,
         **_file_ref(
@@ -225,6 +257,7 @@ def _download_storage_file(bucket: str, storage_path: str) -> bytes:
         raise HTTPException(status_code=404, detail="Arquivo não encontrado.")
     if not storage_path or ".." in storage_path.split("/"):
         raise HTTPException(status_code=400, detail="Caminho de arquivo inválido.")
+    assert_asset_not_expired(storage_bucket=bucket, storage_path=storage_path)
     try:
         return supabase.storage.from_(bucket).download(storage_path)
     except Exception as exc:

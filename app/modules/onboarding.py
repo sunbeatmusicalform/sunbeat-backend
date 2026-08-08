@@ -460,12 +460,28 @@ async def configure_onboarding(
 
     current_row = _load_settings(slug) or {}
     extra = copy.deepcopy(current_row.get("extra_settings") or {})
+    existing_onboarding = (
+        extra.get("onboarding") if isinstance(extra.get("onboarding"), dict) else {}
+    )
+    preview_digest = _profile_digest(slug, preview["profile"])
+    if (
+        existing_onboarding.get("preview_digest") == preview_digest
+        and existing_onboarding.get("completed_at")
+    ):
+        response = {
+            **preview,
+            "status": "already_applied",
+            "completedAt": existing_onboarding["completed_at"],
+        }
+        _finish_audit(audit_id, status="succeeded", response=response)
+        return {"ok": True, "data": response, "audit_id": audit_id}
+
     completed_at = datetime.now(timezone.utc).isoformat()
     extra["onboarding"] = {
         "version": 1,
         "profile": preview["profile"],
         "enabled_workflows": preview["enabledWorkflows"],
-        "preview_digest": _profile_digest(slug, preview["profile"]),
+        "preview_digest": preview_digest,
         "completed_at": completed_at,
         "completed_by": "portal_session",
         "provisioning": {
@@ -480,6 +496,7 @@ async def configure_onboarding(
             "applied_at": completed_at,
         },
     }
+    branding_updated = False
     try:
         if preview["provisioningMode"] == "self_service":
             (
@@ -488,6 +505,7 @@ async def configure_onboarding(
                 .eq("workspace_slug", slug)
                 .execute()
             )
+            branding_updated = True
         (
             supabase.table("workspace_workflow_settings")
             .upsert(
@@ -502,6 +520,16 @@ async def configure_onboarding(
         )
     except Exception as exc:
         logger.exception("onboarding apply failed workspace=%s", slug)
+        if branding_updated:
+            try:
+                (
+                    supabase.table("workspace_branding")
+                    .update({"enabled_workflows": preview["provisionedWorkflowTypes"]})
+                    .eq("workspace_slug", slug)
+                    .execute()
+                )
+            except Exception:
+                logger.exception("onboarding branding rollback failed workspace=%s", slug)
         _finish_audit(audit_id, status="failed", error=str(exc))
         raise HTTPException(status_code=503, detail="Não foi possível salvar o onboarding.") from exc
 

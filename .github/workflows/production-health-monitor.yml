@@ -1,0 +1,44 @@
+name: Production health monitor
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Low-frequency baseline to stay within the repository's included Actions usage.
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-health-monitor
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check public routing and backend readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Verify production endpoints
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          check_status() {
+            local url="$1"
+            local expected="$2"
+            local body
+
+            body="$(curl --fail --silent --show-error \
+              --connect-timeout 10 --max-time 20 \
+              --retry 2 --retry-all-errors \
+              --header 'Accept: application/json' \
+              "$url")"
+
+            jq --exit-status --arg expected "$expected" \
+              '.status == $expected' <<<"$body" >/dev/null
+          }
+
+          check_status "https://sunbeat.pro/health" "ok"
+          check_status "https://sunbeat.com.br/health" "ok"
+          check_status "https://sunbeat-backend.fly.dev/readiness" "ready"

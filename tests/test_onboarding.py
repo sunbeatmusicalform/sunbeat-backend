@@ -70,6 +70,12 @@ class _FakeTable:
     def execute(self) -> SimpleNamespace:
         if self.name == "setup_ai_action_audit" and not self.owner.audit_available:
             raise RuntimeError("setup_ai_action_audit is missing")
+        if (
+            self.name == "workspace_workflow_settings"
+            and self.operation == "upsert"
+            and self.owner.onboarding_write_fails
+        ):
+            raise RuntimeError("onboarding settings write failed")
 
         rows = self.owner.tables.setdefault(self.name, [])
         if self.operation == "insert":
@@ -106,12 +112,14 @@ class _FakeSupabase:
         audit_available: bool = True,
         self_service: bool = True,
         override: dict | None = None,
+        onboarding_write_fails: bool = False,
     ) -> None:
         self.audit_available = audit_available
+        self.onboarding_write_fails = onboarding_write_fails
         self.auth = SimpleNamespace(
             admin=SimpleNamespace(
                 get_user_by_id=lambda _user_id: SimpleNamespace(
-                    user=SimpleNamespace(user_metadata={"self_service": self_service})
+                    user=SimpleNamespace(app_metadata={"self_service": self_service})
                 )
             )
         )
@@ -340,3 +348,58 @@ def test_apply_rejects_changed_profile_after_preview() -> None:
     )
     assert response.status_code == 409
     assert fake.tables["workspace_workflow_settings"] == []
+
+
+def test_apply_retry_is_idempotent_and_preserves_first_completion() -> None:
+    fake = _FakeSupabase()
+    client, headers = _client(fake)
+    profile = _profile()
+    preview_response = client.post(
+        "/workspaces/demo/onboarding",
+        headers=headers,
+        json={"operation": "preview_patch", "profile": profile},
+    )
+    preview = preview_response.json()["data"]
+    request = {
+        "operation": "apply_patch",
+        "profile": profile,
+        "preview_token": preview["previewToken"],
+    }
+
+    first = client.post("/workspaces/demo/onboarding", headers=headers, json=request)
+    first_completed_at = first.json()["data"]["completedAt"]
+    branding_after_first = deepcopy(fake.tables["workspace_branding"])
+    second = client.post("/workspaces/demo/onboarding", headers=headers, json=request)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["data"]["status"] == "already_applied"
+    assert second.json()["data"]["completedAt"] == first_completed_at
+    assert fake.tables["workspace_branding"] == branding_after_first
+    assert len(fake.tables["workspace_workflow_settings"]) == 1
+
+
+def test_apply_rolls_back_branding_when_profile_persistence_fails() -> None:
+    fake = _FakeSupabase(onboarding_write_fails=True)
+    original = deepcopy(fake.tables["workspace_branding"])
+    client, headers = _client(fake)
+    profile = _profile()
+    preview = client.post(
+        "/workspaces/demo/onboarding",
+        headers=headers,
+        json={"operation": "preview_patch", "profile": profile},
+    ).json()["data"]
+
+    response = client.post(
+        "/workspaces/demo/onboarding",
+        headers=headers,
+        json={
+            "operation": "apply_patch",
+            "profile": profile,
+            "preview_token": preview["previewToken"],
+        },
+    )
+
+    assert response.status_code == 503
+    assert fake.tables["workspace_branding"] == original
+    assert fake.tables["setup_ai_action_audit"][-1]["status"] == "failed"

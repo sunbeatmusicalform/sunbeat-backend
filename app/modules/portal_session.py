@@ -21,12 +21,14 @@ import hmac
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.core.database import supabase
 
 logger = logging.getLogger(__name__)
 
@@ -49,33 +51,91 @@ def _expected_pass_sha256() -> str:
     return value.strip().lower()
 
 
-def issue_portal_token(workspace_slug: str, expires_at: Optional[int] = None) -> str:
+def issue_portal_token(
+    workspace_slug: str,
+    expires_at: Optional[int] = None,
+    *,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> str:
     exp = expires_at or int(time.time()) + TOKEN_TTL_SECONDS
+    claims = {"ws": workspace_slug, "exp": exp}
+    if user_id or session_id:
+        if not user_id or not session_id:
+            raise ValueError("user_id and session_id must be provided together")
+        claims.update({"uid": user_id, "sid": session_id})
     payload = base64.urlsafe_b64encode(
-        json.dumps({"ws": workspace_slug, "exp": exp}, separators=(",", ":")).encode()
+        json.dumps(claims, separators=(",", ":")).encode()
     ).decode().rstrip("=")
     sig = hmac.new(_signing_key().encode(), payload.encode(), hashlib.sha256).hexdigest()
     return f"{payload}.{sig}"
 
 
-def portal_token_is_valid(token: str, workspace_slug: str) -> bool:
+def _decode_portal_token(token: str, *, allow_expired: bool = False) -> Optional[dict]:
     if not token or "." not in token:
-        return False
+        return None
     payload, _, sig = token.rpartition(".")
     key = _signing_key()
     if not key:
-        return False
+        return None
     expected = hmac.new(key.encode(), payload.encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(sig, expected):
-        return False
+        return None
     try:
         padded = payload + "=" * (-len(payload) % 4)
         data = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
     except Exception:
+        return None
+    if not allow_expired and int(data.get("exp", 0)) <= int(time.time()):
+        return None
+    return data
+
+
+def _persistent_session_is_valid(data: dict) -> bool:
+    session_id = str(data.get("sid") or "")
+    user_id = str(data.get("uid") or "")
+    workspace_slug = str(data.get("ws") or "")
+    if bool(session_id) != bool(user_id):
         return False
-    if data.get("ws") != workspace_slug:
+    if not session_id:
+        # Backward compatibility for managed/password sessions. Self-service
+        # sessions always carry both claims and are checked persistently.
+        return True
+    try:
+        rows = (
+            supabase.table("portal_sessions")
+            .select("session_id,user_id,workspace_slug,expires_at,revoked_at")
+            .eq("session_id", session_id)
+            .eq("user_id", user_id)
+            .eq("workspace_slug", workspace_slug)
+            .limit(1)
+            .execute()
+        )
+        row = (getattr(rows, "data", None) or [None])[0]
+        if not row or row.get("revoked_at"):
+            return False
+        expires_at = datetime.fromisoformat(str(row.get("expires_at") or "").replace("Z", "+00:00"))
+        if expires_at <= datetime.now(timezone.utc):
+            return False
+        membership = (
+            supabase.table("workspace_users")
+            .select("user_id")
+            .eq("workspace_slug", workspace_slug)
+            .eq("user_id", user_id)
+            .limit(1)
+            .execute()
+        )
+        return bool(getattr(membership, "data", None))
+    except Exception:
+        logger.exception("persistent portal session validation failed workspace=%s", workspace_slug)
         return False
-    return int(data.get("exp", 0)) > int(time.time())
+
+
+def portal_token_is_valid(token: str, workspace_slug: str) -> bool:
+    data = _decode_portal_token(token)
+    if not data or data.get("ws") != workspace_slug:
+        return False
+    return _persistent_session_is_valid(data)
 
 
 def require_portal_session(workspace_slug: str, x_portal_token: Optional[str]) -> None:

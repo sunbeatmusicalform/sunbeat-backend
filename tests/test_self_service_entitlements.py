@@ -32,7 +32,17 @@ class _Admin:
 
     def get_user_by_id(self, _user_id):
         return SimpleNamespace(
-            user=SimpleNamespace(user_metadata={"self_service": self.self_service})
+            user=SimpleNamespace(app_metadata={"self_service": self.self_service})
+        )
+
+
+class _UserMetadataOnlyAdmin:
+    def get_user_by_id(self, _user_id):
+        return SimpleNamespace(
+            user=SimpleNamespace(
+                app_metadata={},
+                user_metadata={"self_service": True},
+            )
         )
 
 
@@ -56,6 +66,21 @@ def test_legacy_workspace_is_never_limited(monkeypatch):
 
     self_service_entitlements.enforce_self_service_submission_limits(
         workspace_slug="atabaque", workflow_type="rights_clearance"
+    )
+
+
+def test_user_editable_metadata_cannot_enable_self_service():
+    fake = _Supabase(
+        {"workspace_users": [_result([{"user_id": "managed-owner"}])]},
+        self_service=False,
+    )
+    fake.auth = SimpleNamespace(admin=_UserMetadataOnlyAdmin())
+
+    assert (
+        self_service_entitlements.is_self_service_workspace(
+            "managed-workspace", client=fake
+        )
+        is False
     )
 
 

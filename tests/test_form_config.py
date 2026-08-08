@@ -1,4 +1,5 @@
 import os
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -48,6 +49,28 @@ class FormConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("footer.poweredBy", result["fields"])
         self.assertEqual(result["steps"]["inicio"], "Início e apresentação")
         self.assertEqual(result["fields"]["marketingNumbers"]["requirement"], "optional")
+
+    def test_non_atabaque_workspace_never_inherits_atabaque_copy(self):
+        with patch.object(form_config, "_read_raw_row", return_value=None):
+            result = form_config._resolve("sunbeat-qa-isolated", "release_intake")
+
+        serialized = json.dumps(result, ensure_ascii=False).lower()
+        self.assertNotIn("atabaque", serialized)
+        self.assertEqual(
+            result["fields"]["welcome.chip"]["label"],
+            "Sunbeat · Operação de lançamentos",
+        )
+        self.assertIn("workspace", result["fields"]["project.assetGuide"]["label"])
+
+    def test_atabaque_keeps_its_approved_production_copy(self):
+        with patch.object(form_config, "_read_raw_row", return_value=None):
+            result = form_config._resolve("atabaque", "release_intake")
+
+        self.assertEqual(
+            result["fields"]["welcome.chip"]["label"],
+            "Atabaque · Um Ritmo de Pensar Música",
+        )
+        self.assertIn("pela Atabaque", result["fields"]["consentTruth"]["hint"])
 
     def test_resolve_uses_workflow_specific_catalogs(self):
         with patch.object(form_config, "_read_raw_row", return_value=None):
