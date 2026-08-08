@@ -12,18 +12,17 @@ followed. Isolated QA releases were used for browser and operational evidence.
 
 ## Automated evidence
 
-- Backend: `212 passed` on Python 3.12.13 using the existing isolated venv.
+- Backend: `225 passed` on Python 3.12.13 using isolated dependencies.
 - Python compile check: `python -m compileall -q app scripts tests` passed.
 - Patch hygiene: `git diff --check` passed for source, configuration, docs, and
   tests. Generated Vite bundles are excluded because bundled Three.js shader
   strings preserve upstream whitespace.
-- Frontend targeted lint passed for `src/lib/api.ts`, `src/pages/LoginPage.tsx`,
-  `src/portal/OnboardingPanel.tsx`, and `src/portal/Portal.tsx`.
-- Frontend production build passed (`tsc -b && vite build`, 2,825 modules).
-- Frontend source is preserved locally through commit `6211ba2` on
+- Repository-wide frontend lint passed with zero findings after removing the
+  remaining React purity/effect findings and limiting the Fast Refresh export
+  exception to intentional shared primitive modules.
+- Frontend production build passed (`tsc -b && vite build`, 2,826 modules).
+- Frontend source is preserved locally through commit `7bd1405` on
   `codex/market-readiness-p0-frontend`; the backend PR carries its built bundle.
-- Full frontend lint remains blocked by 18 pre-existing findings outside the
-  changed files (Fast Refresh export layout and React purity/effect rules).
 - Docker validation was unavailable because the configured Colima socket was
   not running. The Python 3.12 suite matches the Dockerfile's Python 3.11+
   language requirements; a future CI/container build is still required.
@@ -52,10 +51,10 @@ The QA mock E2E test uses the isolated slug `qa-isolated-records` and covers:
 | Waitlist / Enterprise | Ready in branch / QA approved | Validation, honeypot, persistence and real Resend delivery to the approved recipient were observed | Production deploy still requires approval |
 | Public chat | Ready | Home bundle still omits public ChatDemo; contextual portal helper remains | None identified in this slice |
 | Free 60-day assets | Ready but unscheduled / schema applied | Registry, access 410, idempotent deletion tests and real dry-run on 2026-08-08: 0 eligible, 0 deleted, 0 failed | Apply/schedule blocked until isolated deletion and restore drill; pre-registry assets need reviewed backfill |
-| 5xx / health / readiness | Baseline ready in branch | Request IDs, 5xx logs, liveness plus service-role/database/schema readiness tests; low-frequency GitHub monitor checks both domains and backend readiness | Monitor starts only after approved merge; six-hour cadence is not real-time and no 5xx-rate alert exists |
+| 5xx / health / readiness | Baseline ready in branch / QA verified | Request IDs, 5xx logs, liveness plus service-role/database/schema readiness tests; Fly checks send an allowed Host header; the shared Supabase client uses HTTP/1.1 after QA exposed terminated HTTP/2 streams; QA `/health` plus database `/readiness` passed; low-frequency GitHub monitor checks both domains and backend readiness | Monitor starts only after approved merge; six-hour cadence is not real-time and no 5xx-rate alert exists |
 | CORS / headers / secrets | QA verified | QA returned CSP/HSTS/request ID and security headers; denied an untrusted origin and allowed `sunbeat.pro`; current-tree scan found placeholders/test values only | Alerting and legacy Supabase advisor findings remain separate work |
 | Backup / restore | Backups verified; restore deferred | Eight completed daily physical backups listed for 2026-08-01 through 2026-08-08; WAL-G active, PITR disabled | Felipe deferred the paid isolated clone due budget; restore is not tested and no clone was created |
-| Terms / Privacy / LGPD | Implemented in branch; legal review pending | Bilingual `/terms` and `/privacy` routes, signup links, controller identity/CNPJ, Recife–PE and public LGPD email; acceptance versions match | Professional legal approval and isolated QA data-subject request drill remain open |
+| Terms / Privacy / LGPD | Access procedure QA-verified; legal review pending | Bilingual `/terms` and `/privacy` routes, signup links, controller identity/CNPJ, Recife–PE and public LGPD email; acceptance versions match; request `LGPD-QA-20260808-01` produced a read-only summary for the isolated self-service QA tenant | Professional legal approval and an isolated deletion exercise remain open |
 | Commit / PR | Draft PR #59 open | Small thematic implementation commits and this evidence update are published for review | No merge or production deploy is authorized |
 
 ## Manual QA credential step — completed 2026-08-08
@@ -103,14 +102,26 @@ merge, and Fly production deploy.
   and `contatofelipefonsek@gmail.com` for the controller identity and public
   LGPD contact. Signup now links to both versioned documents before acceptance.
   Professional legal review is still required; no legal approval is claimed.
-- Frontend production build and targeted ESLint for the four changed source
-  files passed. Browser QA verified Portuguese Privacy, English Terms, signup
-  links, official Sunbeat branding, and zero console errors. The repository-wide
-  lint still reports 18 pre-existing findings in unchanged shared UI/portal
-  files, so a clean full lint is not claimed for this update.
-- Backend suite passed with `215 passed` on Python 3.12, including three new
-  legal-route tests for localized titles, canonical URLs, public indexing and
-  Portuguese aliases.
+- Frontend production build and repository-wide ESLint passed. Browser QA
+  verified Portuguese Privacy, English Terms, signup links, official Sunbeat
+  branding, and zero console errors.
+- Backend suite passed with `225 passed` on Python 3.12, including legal-route,
+  Fly healthcheck configuration, and isolated LGPD access-report tests.
+- Fly QA release 10 passed both service checks after assigning the allowed
+  `sunbeat-backend.fly.dev` Host header to `/health` and `/readiness` and using
+  HTTP/1.1 for the shared Supabase client. Release 9 exposed repeatable
+  `RemoteProtocolError` failures on reused HTTP/2 streams; the issue was not
+  marked resolved until the transport fix. Three consecutive scheduled
+  readiness cycles plus independent public requests completed with all six
+  schema queries returning HTTP/1.1 200. Public QA responses confirmed
+  `status=ok` and `database=reachable`; production was not deployed.
+- Executed `scripts.lgpd_subject_access` with `--summary-only` for request
+  `LGPD-QA-20260808-01` and disposable workspace
+  `sunbeat-qa-20260808-1108`. It verified the exact owner Auth identity and
+  server-controlled `app_metadata.self_service`, inventoried 12 scoped record
+  sets, redacted security fields, and reported zero database, Storage, or
+  customer-workspace writes. Unit tests reject Atabaque, managed workspaces,
+  non-QA slugs, and owner/Auth mismatches; no Atabaque query was performed.
 - Current-tree secret scan found empty `.env.example` fields, CI placeholders,
   and test-only values; it did not find a deployed credential value. Fly and
   Supabase secret values were not read.

@@ -19,6 +19,7 @@ primary_region = 'gru'
   # Catch startup/import failures during Fly deploys instead of relying on TCP only.
   [[http_service.checks]]
     grace_period = "15s"
+    headers = { Host = "sunbeat-backend.fly.dev" }
     interval = "30s"
     method = "GET"
     timeout = "5s"
@@ -26,6 +27,7 @@ primary_region = 'gru'
 
   [[http_service.checks]]
     grace_period = "20s"
+    headers = { Host = "sunbeat-backend.fly.dev" }
     interval = "60s"
     method = "GET"
     timeout = "8s"

@@ -1,4 +1,6 @@
-from supabase import create_client
+import httpx
+from supabase import ClientOptions, create_client
+
 from app.core.config import settings
 
 
@@ -20,4 +22,14 @@ def _get_supabase_key() -> str:
     )
 
 
-supabase = create_client(settings.SUPABASE_URL, _get_supabase_key())
+def build_supabase_client(*, httpx_client: httpx.Client | None = None):
+    """Build the shared client on HTTP/1.1 to avoid terminated HTTP/2 streams."""
+    client = httpx_client if httpx_client is not None else httpx.Client(http2=False, timeout=120)
+    return create_client(
+        settings.SUPABASE_URL,
+        _get_supabase_key(),
+        options=ClientOptions(httpx_client=client),
+    )
+
+
+supabase = build_supabase_client()

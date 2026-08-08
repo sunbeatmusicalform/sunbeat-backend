@@ -148,7 +148,15 @@ or a schedule.
 - [ ] Obtain professional legal review of both documents before describing
       them as legally approved. The implementation is an operational draft,
       not a legal opinion.
-- [ ] Execute and evidence a deletion/access request in an isolated QA tenant.
+- [x] Execute and evidence a read-only access request in an isolated QA tenant.
+      Request `LGPD-QA-20260808-01` inventoried the disposable self-service
+      workspace `sunbeat-qa-20260808-1108` on 2026-08-08 with summary-only
+      output. The procedure verified the owner identity and reported zero
+      database, Storage, or customer-workspace writes; it rejects managed and
+      non-QA workspaces before querying their records.
+- [ ] Execute and evidence a deletion request in an isolated QA tenant. Asset
+      retention remains dry-run only and unscheduled until that exercise and
+      the restore drill are approved.
 
 ## QA E2E boundary
 
