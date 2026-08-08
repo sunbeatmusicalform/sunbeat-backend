@@ -296,10 +296,51 @@ WORKFLOW_CATALOGS: Dict[str, tuple[Dict[str, Dict[str, Any]], Dict[str, str]]] =
 }
 
 
-def _workflow_catalog(workflow_type: str) -> tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
+# The release-intake catalog predates multi-tenant self-service and contains
+# Atabaque's approved production copy. Keep that exact copy for Atabaque, but
+# never use customer-specific content as another workspace's fallback.
+GENERIC_RELEASE_INTAKE_COPY: Dict[str, Dict[str, str]] = {
+    "welcome.chip": {"label": "Sunbeat · Operação de lançamentos"},
+    "welcome.restrictedNotice": {
+        "label": "Formulário do workspace",
+        "hint": "Se você recebeu este link por engano, fale com a equipe responsável pelo workspace.",
+    },
+    "project.assetGuide": {
+        "label": "Guia de assets do workspace",
+        "hint": "Consulte as orientações do workspace antes de compartilhar os arquivos finais.",
+    },
+    "track.mainArtists": {
+        "hint": "Busque no cadastro do workspace ou convide um novo artista.",
+    },
+    "consentTruth": {
+        "hint": (
+            "Ao enviar este formulário, confirmo que as informações fornecidas são verdadeiras "
+            "e autorizo seu uso pela equipe responsável pelo workspace e pela Sunbeat para fins "
+            "de análise, cadastro, operação de lançamento, clearance, contratos, comunicação e "
+            "organização dos materiais relacionados ao projeto. Os dados serão tratados conforme "
+            "a política de privacidade aplicável e compartilhados apenas com pessoas e sistemas "
+            "necessários para a execução do fluxo."
+        ),
+    },
+}
+
+
+def _generic_release_intake_fields() -> Dict[str, Dict[str, Any]]:
+    fields = copy.deepcopy(RELEASE_INTAKE_FIELDS)
+    for key, values in GENERIC_RELEASE_INTAKE_COPY.items():
+        fields[key].update(values)
+    return fields
+
+
+def _workflow_catalog(
+    workflow_type: str,
+    workspace_slug: Optional[str] = None,
+) -> tuple[Dict[str, Dict[str, Any]], Dict[str, str]]:
     catalog = WORKFLOW_CATALOGS.get(workflow_type)
     if catalog is None:
         raise HTTPException(status_code=404, detail="workflow sem catálogo de formulário")
+    if workflow_type == "release_intake" and workspace_slug != "atabaque":
+        return _generic_release_intake_fields(), catalog[1]
     return catalog
 
 
@@ -342,7 +383,7 @@ def _stored_form(workspace_slug: str, workflow_type: str) -> tuple[Dict[str, Any
 
 
 def _resolve(workspace_slug: str, workflow_type: str) -> Dict[str, Any]:
-    form_fields, step_labels = _workflow_catalog(workflow_type)
+    form_fields, step_labels = _workflow_catalog(workflow_type, workspace_slug)
     stored, row_exists = _stored_form(workspace_slug, workflow_type)
     overrides = stored.get("fields") or {}
     fields: Dict[str, Dict[str, Any]] = {}
@@ -386,7 +427,7 @@ async def patch_form_config(
 ) -> Dict[str, Any]:
     slug = workspace_slug.strip().lower()
     workflow = workflow_type.strip().lower()
-    form_fields, _ = _workflow_catalog(workflow)
+    form_fields, _ = _workflow_catalog(workflow, slug)
     unknown = sorted(set(body.fields) - set(form_fields))
     if unknown:
         raise HTTPException(status_code=422, detail=f"campos desconhecidos: {', '.join(unknown)}")

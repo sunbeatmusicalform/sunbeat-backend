@@ -101,3 +101,27 @@ def test_portal_data_links_project_drive_folder_to_demand(monkeypatch):
         {"label": "Capa", "url": "https://cdn.example.com/capa.png"},
     ]
     assert result["drive_folders"][0]["project_id"] == "rec-project"
+
+
+def test_other_tenant_never_reads_atabaque_airtable(monkeypatch):
+    monkeypatch.setattr(portal_operations, "_submission_rows", lambda _slug: [])
+    monkeypatch.setattr(
+        portal_operations,
+        "_airtable_data",
+        lambda: (_ for _ in ()).throw(AssertionError("Atabaque Airtable must not be read")),
+    )
+    monkeypatch.setattr(portal_operations, "_invite_items", lambda _slug: [])
+    monkeypatch.setattr(
+        portal_operations,
+        "get_workflow_settings",
+        lambda *_args: {"airtable_sync_enabled": True},
+    )
+
+    result = asyncio.run(portal_operations.get_portal_data("sunbeat-qa-isolated", None))
+
+    assert result["source"] == "supabase"
+    assert result["projects"] == []
+    assert result["integrations"]["airtable"] == {
+        "configured": False,
+        "status": "disabled",
+    }
