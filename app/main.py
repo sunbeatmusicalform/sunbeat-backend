@@ -49,9 +49,9 @@ app = FastAPI(
     description="Infrastructure for music release metadata",
 )
 
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=[
+
+def _trusted_hosts(additional_hosts: str = "") -> list[str]:
+    hosts = [
         "sunbeat.pro",
         "*.sunbeat.pro",
         "sunbeat.com.br",
@@ -60,7 +60,17 @@ app.add_middleware(
         "localhost",
         "127.0.0.1",
         "testserver",
-    ],
+    ]
+    for value in additional_hosts.split(","):
+        host = value.strip().lower()
+        if host and host not in hosts and re.fullmatch(r"(?:\*\.)?[a-z0-9.-]+", host):
+            hosts.append(host)
+    return hosts
+
+
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=_trusted_hosts(settings.ADDITIONAL_ALLOWED_HOSTS),
 )
 
 app.add_middleware(
