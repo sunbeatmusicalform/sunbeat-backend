@@ -11,6 +11,8 @@ Before a future deploy, in this order:
 1. Review and apply `docs/supabase/self_service_security.sql` with a privileged
    migration identity. Confirm that `anon` and `authenticated` cannot read the
    four new tables and that only `service_role` can execute the two functions.
+   The functions are `security invoker`, so the explicit service-role table
+   grants remain the authority boundary.
 2. Review and apply `docs/supabase/asset_retention.sql`.
 3. Create a new QA-only self-service workspace through `/signup`; never use
    `atabaque` for onboarding E2E.
@@ -28,8 +30,10 @@ dropping them would destroy security/audit history.
 ## Health, readiness, and 5xx
 
 - `/health` is liveness only and does not call dependencies.
-- `/readiness` checks that the application can query Supabase and returns 503
-  without connection details when unavailable.
+- `/readiness` requires the explicit service-role secret when self-service is
+  enabled, checks that the application can query Supabase, and read-checks all
+  migration-owned tables. It returns 503 without connection details when the
+  configuration, database, or required schema is unavailable.
 - Every response receives `X-Request-ID`; 5xx logs include request ID, method,
   path, and status. Alert routing and thresholds still require an operational
   decision/provider configuration. No alert is claimed active by this branch.
@@ -87,6 +91,9 @@ python -m scripts.enforce_free_asset_retention --apply --limit 100
 - Magic links are hashed at rest, bound to user and workspace, consumed
   atomically once, and expire after 30 minutes. Self-service portal sessions are
   checked against membership and a revocable persistent session row.
+- The `self_service` authorization marker and retention policy live in
+  server-controlled Supabase `app_metadata`; user-editable `user_metadata` is
+  never accepted for authorization.
 - Managed password sessions remain stateless for compatibility. Migrating them
   to per-user sessions is a residual risk and must not be done by changing a
   real client's workflow configuration.

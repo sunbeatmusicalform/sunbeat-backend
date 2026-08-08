@@ -119,7 +119,7 @@ class _FakeSupabase:
         self.auth = SimpleNamespace(
             admin=SimpleNamespace(
                 get_user_by_id=lambda _user_id: SimpleNamespace(
-                    user=SimpleNamespace(user_metadata={"self_service": self_service})
+                    user=SimpleNamespace(app_metadata={"self_service": self_service})
                 )
             )
         )

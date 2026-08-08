@@ -254,12 +254,16 @@ def signup(payload: SignupRequest, request: Request):
                 "email": email,
                 "password": secrets.token_urlsafe(48),
                 "email_confirm": False,
+                "app_metadata": {
+                    # Authorization attributes must be server-controlled. Supabase
+                    # users can edit user_metadata themselves.
+                    "self_service": True,
+                    "asset_retention_days": 60,
+                },
                 "user_metadata": {
                     "full_name": payload.name.strip(),
                     "workspace_slug": workspace_slug,
-                    "self_service": True,
                     "signup_market": "brazil" if _locale(request) == "pt-BR" else "global",
-                    "asset_retention_days": 60,
                     "terms_accepted_at": accepted_at,
                     "terms_version": TERMS_VERSION,
                     "privacy_version": PRIVACY_VERSION,

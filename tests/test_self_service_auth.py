@@ -130,7 +130,8 @@ class _Admin:
             user=SimpleNamespace(
                 id=user_id,
                 email=created.get("email") or "felipe@example.com",
-                user_metadata=deepcopy(created.get("user_metadata") or {"self_service": True}),
+                app_metadata=deepcopy(created.get("app_metadata") or {"self_service": True}),
+                user_metadata=deepcopy(created.get("user_metadata") or {}),
             )
         )
 
@@ -222,8 +223,9 @@ def test_signup_provisions_free_workspace_and_sends_link() -> None:
     assert fake.tables["workspaces"][0]["plan_id"] == "free"
     assert fake.tables["workspace_users"][0]["role"] == "owner"
     assert fake.tables["workspace_branding"][0]["enabled_workflows"] == ["release_intake"]
-    assert fake.admin.created[0]["user_metadata"]["self_service"] is True
-    assert fake.admin.created[0]["user_metadata"]["asset_retention_days"] == 60
+    assert fake.admin.created[0]["app_metadata"]["self_service"] is True
+    assert fake.admin.created[0]["app_metadata"]["asset_retention_days"] == 60
+    assert "self_service" not in fake.admin.created[0]["user_metadata"]
 
 
 def test_signup_honeypot_returns_neutral_success_without_writes() -> None:

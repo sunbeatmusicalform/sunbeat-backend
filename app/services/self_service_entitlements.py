@@ -64,7 +64,7 @@ def is_self_service_workspace(
 
         auth_result = database.auth.admin.get_user_by_id(str(membership["user_id"]))
         user = getattr(auth_result, "user", None)
-        metadata = getattr(user, "user_metadata", None) or {}
+        metadata = getattr(user, "app_metadata", None) or {}
         return metadata.get("self_service") is True
     except Exception as exc:
         logger.warning(

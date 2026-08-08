@@ -75,20 +75,20 @@ create or replace function public.consume_self_service_magic_link(
   p_workspace_slug text
 ) returns boolean
 language plpgsql
-security definer
-set search_path = public
+security invoker
+set search_path = ''
 as $$
 declare
   changed integer;
 begin
   update public.self_service_magic_links
-     set consumed_at = now()
+     set consumed_at = pg_catalog.now()
    where token_id = p_token_id
      and token_hash = p_token_hash
      and user_id = p_user_id
      and workspace_slug = p_workspace_slug
      and consumed_at is null
-     and expires_at > now();
+     and expires_at > pg_catalog.now();
   get diagnostics changed = row_count;
   return changed = 1;
 end;
@@ -101,8 +101,8 @@ create or replace function public.consume_public_rate_limit(
   p_window_seconds integer
 ) returns boolean
 language plpgsql
-security definer
-set search_path = public
+security invoker
+set search_path = ''
 as $$
 declare
   current_count integer;
@@ -112,13 +112,13 @@ begin
   end if;
 
   insert into public.public_rate_limits(scope, identifier_hash, window_started_at, attempt_count)
-  values (p_scope, p_identifier_hash, now(), 1)
+  values (p_scope, p_identifier_hash, pg_catalog.now(), 1)
   on conflict (scope, identifier_hash) do update
     set window_started_at = case
-          when public.public_rate_limits.window_started_at <= now() - make_interval(secs => p_window_seconds)
-          then now() else public.public_rate_limits.window_started_at end,
+          when public.public_rate_limits.window_started_at <= pg_catalog.now() - pg_catalog.make_interval(secs => p_window_seconds)
+          then pg_catalog.now() else public.public_rate_limits.window_started_at end,
         attempt_count = case
-          when public.public_rate_limits.window_started_at <= now() - make_interval(secs => p_window_seconds)
+          when public.public_rate_limits.window_started_at <= pg_catalog.now() - pg_catalog.make_interval(secs => p_window_seconds)
           then 1 else public.public_rate_limits.attempt_count + 1 end
   returning attempt_count into current_count;
 

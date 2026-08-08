@@ -14,6 +14,7 @@ from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from app.core.config import settings
 from app.core.database import supabase
 from app.modules.admin_config import router as admin_config_router
 from app.modules.ai_gateway import router as ai_gateway_router
@@ -167,8 +168,31 @@ def health():
 
 @app.get("/readiness")
 def readiness():
+    if settings.SELF_SERVICE_SIGNUP_ENABLED and not settings.SUPABASE_SERVICE_ROLE_KEY:
+        logging.getLogger("sunbeat.readiness").error(
+            "self-service readiness failed: explicit service-role key is missing"
+        )
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "service": "sunbeat-api",
+                "configuration": "unavailable",
+            },
+        )
     try:
         supabase.table("workspaces").select("slug").limit(1).execute()
+        if settings.SELF_SERVICE_SIGNUP_ENABLED:
+            # Read-only schema gate: the release must not become ready until the
+            # reviewed security/retention migrations have been applied.
+            for table in (
+                "self_service_magic_links",
+                "portal_sessions",
+                "public_rate_limits",
+                "public_leads",
+                "asset_retention_records",
+            ):
+                supabase.table(table).select("*").limit(1).execute()
     except Exception as exc:
         logging.getLogger("sunbeat.readiness").error("database readiness failed: %s", type(exc).__name__)
         return JSONResponse(
