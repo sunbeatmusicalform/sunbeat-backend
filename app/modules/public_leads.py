@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 import logging
-import time
-from collections import defaultdict, deque
+import uuid
+from datetime import datetime, timezone
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
 
+from app.core.database import supabase
 from app.services.email import send_public_lead_email
+from app.services.rate_limit import enforce_rate_limit
 
 router = APIRouter(prefix="/public", tags=["public"])
 logger = logging.getLogger("sunbeat.public_leads")
 
-_attempts: dict[str, deque[float]] = defaultdict(deque)
-_RATE_WINDOW_SECONDS = 60 * 10
+_RATE_WINDOW_SECONDS = 10 * 60
 _RATE_LIMIT = 5
 
 
@@ -28,14 +29,9 @@ class PublicLeadRequest(BaseModel):
     website: str | None = Field(default=None, max_length=200)
 
 
-def _check_rate_limit(client_key: str) -> None:
-    now = time.monotonic()
-    recent = _attempts[client_key]
-    while recent and now - recent[0] > _RATE_WINDOW_SECONDS:
-        recent.popleft()
-    if len(recent) >= _RATE_LIMIT:
-        raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
-    recent.append(now)
+def _locale(request: Request) -> str:
+    host = (request.headers.get("x-forwarded-host") or request.headers.get("host") or "").lower()
+    return "pt-BR" if host.split(":", 1)[0].endswith("sunbeat.com.br") else "en"
 
 
 @router.post("/leads")
@@ -44,23 +40,92 @@ def create_public_lead(payload: PublicLeadRequest, request: Request):
     if payload.website:
         return {"ok": True}
 
-    client_key = request.client.host if request.client else "unknown"
-    _check_rate_limit(client_key)
+    email = str(payload.email).strip().lower()
+    enforce_rate_limit(
+        request,
+        scope=f"public-lead:{payload.lead_type}:ip",
+        limit=20,
+        window_seconds=_RATE_WINDOW_SECONDS,
+        database=supabase,
+    )
+    enforce_rate_limit(
+        request,
+        scope=f"public-lead:{payload.lead_type}:subject",
+        limit=_RATE_LIMIT,
+        window_seconds=_RATE_WINDOW_SECONDS,
+        subject=email,
+        database=supabase,
+    )
 
     if payload.lead_type == "waitlist" and not payload.plan:
         raise HTTPException(status_code=422, detail="Plan is required for waitlist submissions.")
 
+    name = payload.name.strip()
+    if len(name) < 2:
+        raise HTTPException(status_code=422, detail="Name is required.")
+
+    lead_id = str(uuid.uuid4())
+    lead_record = {
+        "id": lead_id,
+        "lead_type": payload.lead_type,
+        "name": name,
+        "email": email,
+        "company": (payload.company or "").strip() or None,
+        "plan": payload.plan,
+        "message": (payload.message or "").strip() or None,
+        "locale": _locale(request),
+        "delivery_status": "received",
+    }
+    delivery_recorded = True
+    try:
+        supabase.table("public_leads").insert(lead_record).execute()
+    except Exception as exc:
+        logger.exception("Failed to persist public lead id=%s", lead_id)
+        raise HTTPException(status_code=503, detail="Could not save your message. Please try again.") from exc
+
     try:
         result = send_public_lead_email(
             lead_type=payload.lead_type,
-            name=payload.name.strip(),
-            email=str(payload.email),
-            company=(payload.company or "").strip() or None,
+            name=name,
+            email=email,
+            company=lead_record["company"],
             plan=payload.plan,
-            message=(payload.message or "").strip() or None,
+            message=lead_record["message"],
         )
     except Exception as exc:
-        logger.exception("Failed to deliver public lead: %s", exc)
+        try:
+            (
+                supabase.table("public_leads")
+                .update({"delivery_status": "failed", "delivery_error": type(exc).__name__})
+                .eq("id", lead_id)
+                .execute()
+            )
+        except Exception:
+            logger.exception("Failed to record public lead delivery failure id=%s", lead_id)
+        logger.exception("Failed to deliver public lead id=%s: %s", lead_id, exc)
         raise HTTPException(status_code=502, detail="Could not deliver your message. Please try again.") from exc
 
-    return {"ok": True, "message_id": result.get("provider_message_id")}
+    message_id = result.get("provider_message_id")
+    try:
+        (
+            supabase.table("public_leads")
+            .update(
+                {
+                    "delivery_status": "delivered",
+                    "provider_message_id": message_id,
+                    "delivered_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            .eq("id", lead_id)
+            .execute()
+        )
+    except Exception as exc:
+        logger.exception("Failed to confirm public lead delivery id=%s", lead_id)
+        delivery_recorded = False
+
+    return {
+        "ok": True,
+        "lead_id": lead_id,
+        "message_id": message_id,
+        "delivery_recorded": delivery_recorded,
+    }

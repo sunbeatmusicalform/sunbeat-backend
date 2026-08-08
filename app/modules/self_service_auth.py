@@ -10,19 +10,20 @@ import re
 import secrets
 import time
 import unicodedata
-from collections import defaultdict, deque
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, EmailStr, Field
 
 from app.core.config import settings
 from app.core.database import supabase
-from app.modules.portal_session import issue_portal_token
+from app.modules.portal_session import TOKEN_TTL_SECONDS, _decode_portal_token, issue_portal_token
 from app.services.email import send_workspace_magic_link_email
+from app.services.rate_limit import enforce_rate_limit
 
 logger = logging.getLogger("sunbeat.self_service_auth")
 router = APIRouter(prefix="/auth", tags=["self-service-auth"])
@@ -31,7 +32,6 @@ MAGIC_LINK_TTL_SECONDS = 30 * 60
 TERMS_VERSION = "sunbeat-terms-2026-08-07"
 PRIVACY_VERSION = "sunbeat-privacy-2026-08-07"
 RESERVED_SLUGS = {"admin", "api", "app", "academy", "help", "mail", "start", "status", "support", "www"}
-_attempts: dict[str, deque[float]] = defaultdict(deque)
 
 
 class SignupRequest(BaseModel):
@@ -54,16 +54,22 @@ def _first_row(result: Any) -> Optional[dict[str, Any]]:
     return rows[0] if rows else None
 
 
-def _rate_limit(request: Request, scope: str, limit: int = 5) -> None:
-    host = request.client.host if request.client else "unknown"
-    key = f"{scope}:{host}"
-    now = time.monotonic()
-    queue = _attempts[key]
-    while queue and now - queue[0] > 10 * 60:
-        queue.popleft()
-    if len(queue) >= limit:
-        raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
-    queue.append(now)
+def _rate_limit(request: Request, scope: str, *, subject: str, limit: int = 5) -> None:
+    enforce_rate_limit(
+        request,
+        scope=f"auth:{scope}:ip",
+        limit=20,
+        window_seconds=10 * 60,
+        database=supabase,
+    )
+    enforce_rate_limit(
+        request,
+        scope=f"auth:{scope}:subject",
+        limit=limit,
+        window_seconds=10 * 60,
+        subject=subject,
+        database=supabase,
+    )
 
 
 def _slugify(value: str) -> str:
@@ -92,10 +98,16 @@ def _magic_key() -> str:
     return key
 
 
-def _issue_magic_token(*, user_id: str, workspace_slug: str) -> str:
+def _issue_magic_token(*, user_id: str, workspace_slug: str, token_id: Optional[str] = None) -> str:
+    jti = token_id or str(uuid.uuid4())
     payload = base64.urlsafe_b64encode(
         json.dumps(
-            {"uid": user_id, "ws": workspace_slug, "exp": int(time.time()) + MAGIC_LINK_TTL_SECONDS},
+            {
+                "uid": user_id,
+                "ws": workspace_slug,
+                "jti": jti,
+                "exp": int(time.time()) + MAGIC_LINK_TTL_SECONDS,
+            },
             separators=(",", ":"),
         ).encode()
     ).decode().rstrip("=")
@@ -115,7 +127,12 @@ def _verify_magic_token(token: str) -> Optional[dict[str, Any]]:
         value = json.loads(base64.urlsafe_b64decode(padded.encode()).decode())
     except Exception:
         return None
-    if not value.get("uid") or not value.get("ws") or int(value.get("exp") or 0) <= int(time.time()):
+    if (
+        not value.get("uid")
+        or not value.get("ws")
+        or not value.get("jti")
+        or int(value.get("exp") or 0) <= int(time.time())
+    ):
         return None
     return value
 
@@ -129,6 +146,7 @@ def _delete_rows(table: str, **filters: str) -> None:
 
 def _rollback(user_id: str, workspace_slug: str) -> None:
     for table, filters in (
+        ("self_service_magic_links", {"workspace_slug": workspace_slug, "user_id": user_id}),
         ("workspace_branding", {"workspace_slug": workspace_slug}),
         ("workspace_users", {"workspace_slug": workspace_slug, "user_id": user_id}),
         ("workspaces", {"slug": workspace_slug}),
@@ -143,9 +161,68 @@ def _rollback(user_id: str, workspace_slug: str) -> None:
         logger.exception("signup rollback failed user=%s", user_id)
 
 
-def _magic_link(request: Request, *, user_id: str, workspace_slug: str) -> str:
-    query = urlencode({"token": _issue_magic_token(user_id=user_id, workspace_slug=workspace_slug)})
+def _magic_link(
+    request: Request,
+    *,
+    user_id: str,
+    workspace_slug: str,
+    purpose: str,
+) -> str:
+    token_id = str(uuid.uuid4())
+    token = _issue_magic_token(user_id=user_id, workspace_slug=workspace_slug, token_id=token_id)
+    supabase.table("self_service_magic_links").insert(
+        {
+            "token_id": token_id,
+            "token_hash": hashlib.sha256(token.encode()).hexdigest(),
+            "user_id": user_id,
+            "workspace_slug": workspace_slug,
+            "purpose": purpose,
+            "expires_at": datetime.fromtimestamp(
+                int(time.time()) + MAGIC_LINK_TTL_SECONDS, timezone.utc
+            ).isoformat(),
+        }
+    ).execute()
+    query = urlencode({"token": token})
     return f"{_origin(request)}/auth/callback?{query}"
+
+
+def _consume_magic_link(token: str, value: dict[str, Any]) -> bool:
+    try:
+        result = supabase.rpc(
+            "consume_self_service_magic_link",
+            {
+                "p_token_id": str(value["jti"]),
+                "p_token_hash": hashlib.sha256(token.encode()).hexdigest(),
+                "p_user_id": str(value["uid"]),
+                "p_workspace_slug": str(value["ws"]),
+            },
+        ).execute()
+        consumed = getattr(result, "data", None)
+        if isinstance(consumed, list):
+            consumed = consumed[0] if consumed else False
+        return consumed is True
+    except Exception:
+        logger.exception("magic-link consumption failed workspace=%s", value.get("ws"))
+        return False
+
+
+def _issue_persistent_portal_session(*, user_id: str, workspace_slug: str) -> str:
+    session_id = str(uuid.uuid4())
+    expires_at = int(time.time()) + TOKEN_TTL_SECONDS
+    supabase.table("portal_sessions").insert(
+        {
+            "session_id": session_id,
+            "user_id": user_id,
+            "workspace_slug": workspace_slug,
+            "expires_at": datetime.fromtimestamp(expires_at, timezone.utc).isoformat(),
+        }
+    ).execute()
+    return issue_portal_token(
+        workspace_slug,
+        expires_at=expires_at,
+        user_id=user_id,
+        session_id=session_id,
+    )
 
 
 @router.post("/signup")
@@ -154,7 +231,8 @@ def signup(payload: SignupRequest, request: Request):
         raise HTTPException(status_code=503, detail="New signups are temporarily closed.")
     if payload.company_website:
         return {"ok": True, "requires_email_confirmation": True}
-    _rate_limit(request, "signup")
+    email = str(payload.email).strip().lower()
+    _rate_limit(request, "signup", subject=email)
     elapsed = int(time.time() * 1000) - payload.form_started_at
     if elapsed < 1200 or elapsed > 2 * 60 * 60 * 1000:
         raise HTTPException(status_code=422, detail="The form could not be validated. Reload and try again.")
@@ -166,7 +244,6 @@ def signup(payload: SignupRequest, request: Request):
         raise HTTPException(status_code=422, detail="Invalid workspace name.")
     if workspace_slug in RESERVED_SLUGS:
         raise HTTPException(status_code=409, detail="This workspace address is reserved.")
-    email = str(payload.email).strip().lower()
     if _first_row(supabase.table("workspaces").select("slug").eq("slug", workspace_slug).limit(1).execute()):
         raise HTTPException(status_code=409, detail="This workspace address is already in use.")
 
@@ -208,7 +285,12 @@ def signup(payload: SignupRequest, request: Request):
         supabase.table("workspace_branding").insert(
             {"workspace_slug": workspace_slug, "workspace_name": payload.workspace_name.strip(), "enabled_workflows": ["release_intake"]}
         ).execute()
-        link = _magic_link(request, user_id=user_id, workspace_slug=workspace_slug)
+        link = _magic_link(
+            request,
+            user_id=user_id,
+            workspace_slug=workspace_slug,
+            purpose="signup",
+        )
         send_workspace_magic_link_email(
             to_email=email,
             name=payload.name.strip(),
@@ -234,8 +316,8 @@ def signup(payload: SignupRequest, request: Request):
 def request_magic_link(payload: LoginRequest, request: Request):
     if payload.company_website:
         return {"ok": True}
-    _rate_limit(request, "login")
     email = str(payload.email).strip().lower()
+    _rate_limit(request, "login", subject=email)
     workspace = _first_row(
         supabase.table("workspaces").select("slug,name,owner_email").eq("owner_email", email).limit(1).execute()
     )
@@ -251,7 +333,26 @@ def request_magic_link(payload: LoginRequest, request: Request):
     )
     if not membership:
         return {"ok": True}
-    link = _magic_link(request, user_id=str(membership["user_id"]), workspace_slug=str(workspace["slug"]))
+    try:
+        auth_result = supabase.auth.admin.get_user_by_id(str(membership["user_id"]))
+        auth_user = getattr(auth_result, "user", None)
+        auth_email = str(getattr(auth_user, "email", "") or "").strip().lower()
+    except Exception:
+        logger.exception("login user lookup failed workspace=%s", workspace["slug"])
+        raise HTTPException(status_code=503, detail="The access email could not be sent. Try again.")
+    if not auth_email or auth_email != email:
+        logger.warning("login owner identity mismatch workspace=%s", workspace["slug"])
+        return {"ok": True}
+    try:
+        link = _magic_link(
+            request,
+            user_id=str(membership["user_id"]),
+            workspace_slug=str(workspace["slug"]),
+            purpose="login",
+        )
+    except Exception as exc:
+        logger.exception("login magic-link persistence failed workspace=%s", workspace["slug"])
+        raise HTTPException(status_code=503, detail="The access email could not be sent. Try again.") from exc
     try:
         send_workspace_magic_link_email(
             to_email=email,
@@ -284,13 +385,45 @@ def magic_link_callback(token: str, request: Request):
     )
     if not membership:
         return RedirectResponse(f"{_origin(request)}/login?error=workspace_access", status_code=303)
+    if not _consume_magic_link(token, value):
+        return RedirectResponse(f"{_origin(request)}/login?error=used_link", status_code=303)
     try:
         supabase.auth.admin.update_user_by_id(user_id, {"email_confirm": True})
     except Exception:
         logger.exception("magic-link confirmation failed user=%s", user_id)
         return RedirectResponse(f"{_origin(request)}/login?error=confirmation", status_code=303)
-    portal_token = issue_portal_token(workspace_slug)
+    try:
+        portal_token = _issue_persistent_portal_session(
+            user_id=user_id,
+            workspace_slug=workspace_slug,
+        )
+    except Exception:
+        logger.exception("portal session creation failed workspace=%s user=%s", workspace_slug, user_id)
+        return RedirectResponse(f"{_origin(request)}/login?error=session", status_code=303)
     return RedirectResponse(
         f"{_origin(request)}/portal/{workspace_slug}#portal_token={portal_token}",
         status_code=303,
     )
+
+
+@router.post("/logout")
+def logout(x_portal_token: Optional[str] = Header(default=None)):
+    token = (x_portal_token or "").strip()
+    data = _decode_portal_token(token, allow_expired=True)
+    if not data:
+        raise HTTPException(status_code=401, detail="unauthorized")
+    session_id = str(data.get("sid") or "")
+    if session_id:
+        try:
+            (
+                supabase.table("portal_sessions")
+                .update({"revoked_at": datetime.now(timezone.utc).isoformat()})
+                .eq("session_id", session_id)
+                .eq("user_id", str(data.get("uid") or ""))
+                .eq("workspace_slug", str(data.get("ws") or ""))
+                .execute()
+            )
+        except Exception as exc:
+            logger.exception("portal logout failed session=%s", session_id)
+            raise HTTPException(status_code=503, detail="Session revocation is unavailable.") from exc
+    return {"ok": True}
