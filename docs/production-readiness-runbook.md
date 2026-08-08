@@ -8,12 +8,16 @@ DNS change, or write against a customer workspace.
 
 Before a future deploy, in this order:
 
-1. Review and apply `docs/supabase/self_service_security.sql` with a privileged
-   migration identity. Confirm that `anon` and `authenticated` cannot read the
-   four new tables and that only `service_role` can execute the two functions.
-   The functions are `security invoker`, so the explicit service-role table
-   grants remain the authority boundary.
-2. Review and apply `docs/supabase/asset_retention.sql`.
+1. Confirm Supabase migration history still contains
+   `20260808125636_self_service_security.sql` and
+   `20260808125637_asset_retention.sql`, applied with Felipe's authorization on
+   2026-08-08. Recheck that `anon` and `authenticated` cannot read the five new
+   tables and that only `service_role` can execute the two functions. The
+   functions are `security invoker`, so the explicit service-role table grants
+   remain the authority boundary.
+2. Re-run Supabase security/performance advisors and record any delta. Do not
+   enable RLS on a legacy operational table until its required policies and
+   application compatibility have been reviewed.
 3. Create a new QA-only self-service workspace through `/signup`; never use
    `atabaque` for onboarding E2E.
 4. Exercise signup, first magic-link use, replay rejection, onboarding preview,
@@ -21,7 +25,7 @@ Before a future deploy, in this order:
 5. Run the retention command without `--apply` and retain its JSON logs. Do not
    schedule or run `--apply` until a QA object older than the cutoff has been
    observed and restored from backup.
-6. Deploy only after Felipe explicitly approves the PR, migrations, and release.
+6. Deploy only after Felipe explicitly approves the PR and Fly release.
 
 Rollback the application release on Fly if readiness fails. Schema additions
 are backward-compatible and should be retained during an application rollback;
@@ -97,6 +101,9 @@ python -m scripts.enforce_free_asset_retention --apply --limit 100
 - Managed password sessions remain stateless for compatibility. Migrating them
   to per-user sessions is a residual risk and must not be done by changing a
   real client's workflow configuration.
+- The 2026-08-08 Supabase advisor run still reports pre-existing public tables
+  without RLS and other legacy findings. Treat these as an open security work
+  item; enabling RLS without complete policies could break production access.
 
 ## LGPD, Terms, and Privacy checklist
 

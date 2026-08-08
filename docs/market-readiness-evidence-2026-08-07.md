@@ -5,8 +5,9 @@ Branch: `codex/market-readiness-p0-hardening`, based on production/main commit
 
 Draft review: https://github.com/sunbeatmusicalform/sunbeat-backend/pull/59
 
-No production deploy, merge, migration, schedule, DNS change, customer write,
-or Atabaque onboarding operation was performed.
+No production deploy, merge, schedule, DNS change, customer write, or Atabaque
+onboarding operation was performed. On 2026-08-08 Felipe authorized the two
+additive Supabase migrations described below; no application release followed.
 
 ## Automated evidence
 
@@ -40,16 +41,16 @@ The QA mock E2E test uses the isolated slug `qa-isolated-records` and covers:
 
 | Area | Status | Evidence / next action | Residual risk |
 |---|---|---|---|
-| Magic link | Ready in branch | Hashed persistent token, 30-minute expiry, atomic one-use consumption, replay/cross-tenant tests | Requires security migration before deploy |
+| Magic link | Ready in branch / schema applied | Hashed persistent token, 30-minute expiry, atomic one-use consumption, replay/cross-tenant tests; production schema contract verified | Application code is not deployed; browser/inbox QA remains pending |
 | Portal session | Ready in branch | User/workspace/session binding, membership check, expiry, logout/revocation tests | Managed password sessions remain legacy/stateless |
 | Authorization metadata | Ready in branch | Self-service and retention claims use server-controlled `app_metadata`; regression test rejects user-editable metadata | Existing managed users remain managed by default |
-| Shared rate limiting | Ready in branch | Atomic database limiter for IP and IP+subject; fail-closed tests | Requires migration; Fly secret-name audit confirmed a deployed service-role key without reading its value |
+| Shared rate limiting | Ready in branch / schema applied | Atomic database limiter for IP and IP+subject; transactional boundary test passed; Fly secret-name audit confirmed a deployed service-role key without reading its value | Application code is not deployed |
 | Self-service onboarding | Ready in branch | Signed preview, profile binding, compensation on persistence failure, idempotent apply/refresh | Manual inbox/browser QA still required |
 | Managed clients / Atabaque | Preserved | Existing `profile_only` behavior and managed test; no customer write performed | No live write test by design |
 | EN/PT-BR recovery UX | Ready in built bundle | Localized replay/access/expired-preview feedback and localized loading | Broader portal UI is historically PT-first |
 | Waitlist / Enterprise | Ready in branch | Validation, honeypot, persistent record, provider result, confirmed recipient test | Real Resend delivery requires QA credential/inbox |
 | Public chat | Ready | Home bundle still omits public ChatDemo; contextual portal helper remains | None identified in this slice |
-| Free 60-day assets | Ready but unscheduled | Registry, access 410, dry-run default, idempotent deletion/missing/error tests | Existing pre-registry assets require a separately reviewed backfill |
+| Free 60-day assets | Ready but unscheduled / schema applied | Registry, access 410, dry-run default, idempotent deletion/missing/error tests | Existing pre-registry assets require a separately reviewed backfill |
 | 5xx / health / readiness | Code ready | Request IDs, 5xx logs, liveness plus service-role/database/schema readiness tests | Alert provider/routing not configured |
 | CORS / headers / secrets | Code ready | Trusted hosts, explicit CORS surface, CSP/HSTS/security headers; secret scan found placeholders only | CSP needs browser verification in deployed QA |
 | Backup / restore | Blocked by credential/manual drill | Exact isolated restore drill documented | Backup must not be called tested yet |
@@ -65,9 +66,9 @@ refresh, logout revokes access, and a waitlist/Enterprise message arrives at
 `contatofelipefonsek@gmail.com`. This is the only application-flow step that
 cannot be proven by the repository mocks.
 
-Separate operational approvals remain necessary for database migrations,
-Resend inbox evidence, restore drill, alert routing, retention backfill/dry-run,
-schedule activation, merge, and Fly deploy.
+Separate operational approvals remain necessary for Resend inbox evidence,
+restore drill, alert routing, retention backfill/dry-run, schedule activation,
+merge, and Fly deploy.
 
 ## Follow-up security audit — 2026-08-08
 
@@ -79,7 +80,31 @@ schedule activation, merge, and Fly deploy.
   `security invoker`, retained explicit service-role-only execution grants, and
   set an empty search path with qualified relations/functions.
 - Added a read-only readiness schema gate for every new security/retention
-  table. No Supabase migration or customer write was performed.
+  table.
 - Read-only Fly audit reconfirmed release 251 at commit `405987c`, a started
   machine with passing health, and deployed secret names including
   `SUPABASE_SERVICE_ROLE_KEY`; no secret value was retrieved.
+
+## Authorized Supabase migration evidence — 2026-08-08
+
+- Authenticated the Supabase CLI through the official browser device flow and
+  linked only project `sunbeat-core` (`pjawmgcnccrdcpjmworg`, `sa-east-1`).
+- Applied additive migrations `20260808125636_self_service_security.sql` and
+  `20260808125637_asset_retention.sql`; repaired migration history after the
+  CLI dry-run path failed before executing SQL, and confirmed local/remote
+  migration versions match.
+- Confirmed all five new tables exist with RLS enabled, no `anon` or
+  `authenticated` CRUD grants, and explicit `service_role` CRUD grants.
+- Confirmed both RPC functions are `security invoker`, have an empty
+  `search_path`, deny execution to `public`/`anon`/`authenticated`, and grant
+  execution to `service_role` only.
+- Ran an isolated transaction as `service_role`: first magic-link consumption
+  succeeded, replay failed, cross-workspace consumption failed, and a limit of
+  two allowed calls rejected the third call. The transaction was rolled back;
+  a follow-up query confirmed zero QA magic-link and rate-limit rows remained.
+- Supabase advisors reported no finding on the five new tables or two new
+  functions. They did report pre-existing public tables without RLS, mutable
+  search paths, duplicate indexes, policy init-plan warnings, and disabled
+  leaked-password protection. These were not changed blindly because several
+  tables serve existing production workflows; remediation requires a separate
+  policy/compatibility review.
