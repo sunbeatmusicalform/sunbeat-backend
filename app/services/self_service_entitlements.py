@@ -42,7 +42,12 @@ def _first_row(result: Any) -> dict[str, Any] | None:
     return rows[0] if rows else None
 
 
-def is_self_service_workspace(workspace_slug: str, *, client: Any = None) -> bool:
+def is_self_service_workspace(
+    workspace_slug: str,
+    *,
+    client: Any = None,
+    fail_closed: bool = False,
+) -> bool:
     """Return True only for accounts explicitly marked by the new signup flow."""
     database = client or supabase
     try:
@@ -61,12 +66,17 @@ def is_self_service_workspace(workspace_slug: str, *, client: Any = None) -> boo
         user = getattr(auth_result, "user", None)
         metadata = getattr(user, "user_metadata", None) or {}
         return metadata.get("self_service") is True
-    except Exception:
+    except Exception as exc:
         logger.warning(
             "Could not verify self-service ownership workspace=%s; legacy behavior preserved",
             workspace_slug,
             exc_info=True,
         )
+        if fail_closed:
+            raise HTTPException(
+                status_code=503,
+                detail="Workspace retention policy is unavailable",
+            ) from exc
         return False
 
 
