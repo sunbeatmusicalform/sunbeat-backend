@@ -62,8 +62,11 @@ Restore drill (QA only):
    retention metadata, and the QA object bytes/checksum.
 6. Record timestamps, RPO, RTO, operator, evidence links, and cleanup.
 
-Current status: **restore drill not executed or evidenced**. Do not describe
-backup as tested until all six steps have evidence.
+Current status: eight completed daily physical backups were listed read-only on
+2026-08-08 (2026-08-01 through 2026-08-08), WAL-G is active, and PITR is
+disabled. **The restore drill was not executed or evidenced.** Do not describe
+backup as restore-tested until all six steps have evidence, and never run the
+CLI restore command against the real project for this drill.
 
 ## Free asset retention
 
@@ -81,6 +84,11 @@ run, QA deletion, and restore drill are approved. Suggested command:
 ```text
 python -m scripts.enforce_free_asset_retention --apply --limit 100
 ```
+
+The first real dry-run was executed from the isolated Fly QA app on 2026-08-08
+without `--apply`: zero eligible, deleted, missing, or failed records. This
+proves the read-only operational path but does not authorize the apply command
+or a schedule.
 
 ## Security and secrets
 

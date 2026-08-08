@@ -7,11 +7,12 @@ Draft review: https://github.com/sunbeatmusicalform/sunbeat-backend/pull/59
 
 No production deploy, merge, schedule, DNS change, customer write, or Atabaque
 onboarding operation was performed. On 2026-08-08 Felipe authorized the two
-additive Supabase migrations described below; no application release followed.
+additive Supabase migrations described below; no production application release
+followed. Isolated QA releases were used for browser and operational evidence.
 
 ## Automated evidence
 
-- Backend: `207 passed` on Python 3.12.13 using the existing isolated venv.
+- Backend: `212 passed` on Python 3.12.13 using the existing isolated venv.
 - Python compile check: `python -m compileall -q app scripts tests` passed.
 - Patch hygiene: `git diff --check` passed for source, configuration, docs, and
   tests. Generated Vite bundles are excluded because bundled Three.js shader
@@ -19,7 +20,7 @@ additive Supabase migrations described below; no application release followed.
 - Frontend targeted lint passed for `src/lib/api.ts`, `src/pages/LoginPage.tsx`,
   `src/portal/OnboardingPanel.tsx`, and `src/portal/Portal.tsx`.
 - Frontend production build passed (`tsc -b && vite build`, 2,825 modules).
-- Frontend source is preserved locally in commit `dd6c567` on
+- Frontend source is preserved locally through commit `6211ba2` on
   `codex/market-readiness-p0-frontend`; the backend PR carries its built bundle.
 - Full frontend lint remains blocked by 18 pre-existing findings outside the
   changed files (Fast Refresh export layout and React purity/effect rules).
@@ -41,34 +42,57 @@ The QA mock E2E test uses the isolated slug `qa-isolated-records` and covers:
 
 | Area | Status | Evidence / next action | Residual risk |
 |---|---|---|---|
-| Magic link | Ready in branch / schema applied | Hashed persistent token, 30-minute expiry, atomic one-use consumption, replay/cross-tenant tests; production schema contract verified | Application code is not deployed; browser/inbox QA remains pending |
-| Portal session | Ready in branch | User/workspace/session binding, membership check, expiry, logout/revocation tests | Managed password sessions remain legacy/stateless |
+| Magic link | Ready in branch / schema applied / QA approved | Hashed persistent token, 30-minute expiry, atomic one-use consumption, replay/cross-tenant tests and isolated browser/inbox QA | Application code is not deployed to production |
+| Portal session | Ready in branch / QA approved | User/workspace/session binding, membership check, expiry, logout/revocation tests; logout revocation observed in QA logs | Managed password sessions remain legacy/stateless |
 | Authorization metadata | Ready in branch | Self-service and retention claims use server-controlled `app_metadata`; regression test rejects user-editable metadata | Existing managed users remain managed by default |
 | Shared rate limiting | Ready in branch / schema applied | Atomic database limiter for IP and IP+subject; transactional boundary test passed; Fly secret-name audit confirmed a deployed service-role key without reading its value | Application code is not deployed |
-| Self-service onboarding | Ready in branch | Signed preview, profile binding, compensation on persistence failure, idempotent apply/refresh | Manual inbox/browser QA still required |
+| Self-service onboarding | Ready in branch / QA approved | Isolated signup, inbox magic link, signed preview, apply, idempotent refresh, portal recovery and logout validated | Production deploy still requires approval |
 | Managed clients / Atabaque | Preserved | Existing `profile_only` behavior and managed test; no customer write performed | No live write test by design |
 | EN/PT-BR recovery UX | Ready in built bundle | Localized replay/access/expired-preview feedback and localized loading | Broader portal UI is historically PT-first |
-| Waitlist / Enterprise | Ready in branch | Validation, honeypot, persistent record, provider result, confirmed recipient test | Real Resend delivery requires QA credential/inbox |
+| Waitlist / Enterprise | Ready in branch / QA approved | Validation, honeypot, persistence and real Resend delivery to the approved recipient were observed | Production deploy still requires approval |
 | Public chat | Ready | Home bundle still omits public ChatDemo; contextual portal helper remains | None identified in this slice |
-| Free 60-day assets | Ready but unscheduled / schema applied | Registry, access 410, dry-run default, idempotent deletion/missing/error tests | Existing pre-registry assets require a separately reviewed backfill |
+| Free 60-day assets | Ready but unscheduled / schema applied | Registry, access 410, idempotent deletion tests and real dry-run on 2026-08-08: 0 eligible, 0 deleted, 0 failed | Apply/schedule blocked until isolated deletion and restore drill; pre-registry assets need reviewed backfill |
 | 5xx / health / readiness | Code ready | Request IDs, 5xx logs, liveness plus service-role/database/schema readiness tests | Alert provider/routing not configured |
-| CORS / headers / secrets | Code ready | Trusted hosts, explicit CORS surface, CSP/HSTS/security headers; secret scan found placeholders only | CSP needs browser verification in deployed QA |
-| Backup / restore | Blocked by credential/manual drill | Exact isolated restore drill documented | Backup must not be called tested yet |
+| CORS / headers / secrets | QA verified | QA returned CSP/HSTS/request ID and security headers; denied an untrusted origin and allowed `sunbeat.pro`; current-tree scan found placeholders/test values only | Alerting and legacy Supabase advisor findings remain separate work |
+| Backup / restore | Backups verified; restore blocked | Eight completed daily physical backups listed for 2026-08-01 through 2026-08-08; WAL-G active, PITR disabled | Restore drill is not executed; never restore over the real project |
 | Terms / Privacy / LGPD | Blocked by legal/content decision | Acceptance versions stored and checklist documented | Actual bilingual legal documents/routes are absent |
-| Commit / PR | Draft PR #59 open | Four thematic implementation commits plus this evidence update are published for review | No merge or deploy is authorized |
+| Commit / PR | Draft PR #59 open | Small thematic implementation commits and this evidence update are published for review | No merge or production deploy is authorized |
 
-## Single manual QA credential step
+## Manual QA credential step — completed 2026-08-08
 
-Create one disposable self-service QA email/workspace (never Atabaque), access
-its inbox, and run the domain matrix on `sunbeat.pro` and `sunbeat.com.br`:
-first magic link succeeds, replay fails, onboarding completes and survives
-refresh, logout revokes access, and a waitlist/Enterprise message arrives at
-`contatofelipefonsek@gmail.com`. This is the only application-flow step that
-cannot be proven by the repository mocks.
+Felipe used the disposable self-service workspace `sunbeat-qa-20260808-1108`
+(never Atabaque for onboarding writes), accessed its inbox, completed
+MotoSchema, verified the generated form, refreshed the configured portal,
+logged out, and approved the authentication test. Waitlist and Enterprise
+messages arrived at `contatofelipefonsek@gmail.com`.
 
-Separate operational approvals remain necessary for Resend inbox evidence,
-restore drill, alert routing, retention backfill/dry-run, schedule activation,
-merge, and Fly deploy.
+That address is temporarily also the owner/contact email for the managed
+Atabaque account. It must be replaced with the client's definitive address only
+after the tool is finalized and presented, in a coordinated handoff. No account
+or Atabaque configuration was changed during this QA work.
+
+Separate operational approvals remain necessary for the restore drill, alert
+routing, retention backfill/apply/schedule, managed-account email handoff,
+merge, and Fly production deploy.
+
+## Operational evidence — 2026-08-08
+
+- Ran `scripts.enforce_free_asset_retention` in its default dry-run mode from
+  the isolated Fly QA app against the applied registry: `eligible=0`,
+  `deleted=0`, `missing=0`, `failed=0`, `dry_run=true`. The command omitted
+  `--apply`, so it performed no Storage deletion or database update.
+- QA `/login` returned CSP, HSTS, `X-Content-Type-Options`, referrer and
+  permissions policies, no-store caching, and a request ID. The official
+  horizontal Sunbeat logo was visually verified after replacing the temporary
+  text-only wordmark.
+- A CORS preflight from `https://evil.example` returned 400 without an allowed
+  origin; `https://sunbeat.pro` returned 200 with that exact allowed origin.
+- Supabase CLI 2.109.1 listed eight completed physical daily backups from
+  2026-08-01 through 2026-08-08. WAL-G is active and PITR is disabled. This is
+  backup-availability evidence, not a restore drill.
+- Current-tree secret scan found empty `.env.example` fields, CI placeholders,
+  and test-only values; it did not find a deployed credential value. Fly and
+  Supabase secret values were not read.
 
 ## Follow-up security audit — 2026-08-08
 
