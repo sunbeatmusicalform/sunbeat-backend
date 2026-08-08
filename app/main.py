@@ -5,10 +5,12 @@ import logging
 import os
 import re
 import traceback
+import uuid
 from html import escape
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -47,6 +49,20 @@ app = FastAPI(
 )
 
 app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=[
+        "sunbeat.pro",
+        "*.sunbeat.pro",
+        "sunbeat.com.br",
+        "*.sunbeat.com.br",
+        "sunbeat-backend.fly.dev",
+        "localhost",
+        "127.0.0.1",
+        "testserver",
+    ],
+)
+
+app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:3000",
@@ -58,9 +74,49 @@ app.add_middleware(
         "https://sunbeat-frontend.fly.dev",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_headers=[
+        "Accept",
+        "Authorization",
+        "Content-Type",
+        "Idempotency-Key",
+        "X-Admin-Token",
+        "X-Portal-Token",
+    ],
 )
+
+
+@app.middleware("http")
+async def security_and_observability_headers(request: Request, call_next):
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; "
+        "form-action 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline' https://use.typekit.net; "
+        "img-src 'self' data: blob: https:; media-src 'self' blob: https:; "
+        "font-src 'self' data: https://use.typekit.net https://p.typekit.net; "
+        "connect-src 'self' https://sunbeat-backend.fly.dev https://*.supabase.co"
+    )
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    if request.url.scheme == "https" or forwarded_proto == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if request.url.path.startswith(("/auth", "/workspaces")):
+        response.headers["Cache-Control"] = "no-store"
+    if response.status_code >= 500:
+        logging.getLogger("sunbeat.errors").error(
+            "http_5xx request_id=%s method=%s path=%s status=%s",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+        )
+    return response
 
 app.include_router(admin_config_router)
 app.include_router(drafts_router)
@@ -88,16 +144,38 @@ app.include_router(ai_gateway_router)
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     tb = traceback.format_exc()
-    logging.getLogger("sunbeat.errors").error("Unhandled exception: %s\n%s", exc, tb)
+    request_id = getattr(request.state, "request_id", "unknown")
+    logging.getLogger("sunbeat.errors").error(
+        "Unhandled exception request_id=%s method=%s path=%s: %s\n%s",
+        request_id,
+        request.method,
+        request.url.path,
+        exc,
+        tb,
+    )
     return JSONResponse(
         status_code=500,
         content={"detail": "Internal server error."},
+        headers={"X-Request-ID": request_id},
     )
 
 
 @app.get("/health")
 def health():
     return {"status": "ok", "service": "sunbeat-api"}
+
+
+@app.get("/readiness")
+def readiness():
+    try:
+        supabase.table("workspaces").select("slug").limit(1).execute()
+    except Exception as exc:
+        logging.getLogger("sunbeat.readiness").error("database readiness failed: %s", type(exc).__name__)
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "service": "sunbeat-api", "database": "unavailable"},
+        )
+    return {"status": "ready", "service": "sunbeat-api", "database": "reachable"}
 
 
 # ---------------------------------------------------------------------------

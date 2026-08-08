@@ -24,6 +24,13 @@ primary_region = 'gru'
     timeout = "5s"
     path = "/health"
 
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "60s"
+    method = "GET"
+    timeout = "8s"
+    path = "/readiness"
+
 [[vm]]
   memory = '1gb'
   cpu_kind = 'shared'
