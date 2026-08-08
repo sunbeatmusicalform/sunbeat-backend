@@ -52,9 +52,9 @@ The QA mock E2E test uses the isolated slug `qa-isolated-records` and covers:
 | Waitlist / Enterprise | Ready in branch / QA approved | Validation, honeypot, persistence and real Resend delivery to the approved recipient were observed | Production deploy still requires approval |
 | Public chat | Ready | Home bundle still omits public ChatDemo; contextual portal helper remains | None identified in this slice |
 | Free 60-day assets | Ready but unscheduled / schema applied | Registry, access 410, idempotent deletion tests and real dry-run on 2026-08-08: 0 eligible, 0 deleted, 0 failed | Apply/schedule blocked until isolated deletion and restore drill; pre-registry assets need reviewed backfill |
-| 5xx / health / readiness | Code ready | Request IDs, 5xx logs, liveness plus service-role/database/schema readiness tests | Alert provider/routing not configured |
+| 5xx / health / readiness | Baseline ready in branch | Request IDs, 5xx logs, liveness plus service-role/database/schema readiness tests; low-frequency GitHub monitor checks both domains and backend readiness | Monitor starts only after approved merge; six-hour cadence is not real-time and no 5xx-rate alert exists |
 | CORS / headers / secrets | QA verified | QA returned CSP/HSTS/request ID and security headers; denied an untrusted origin and allowed `sunbeat.pro`; current-tree scan found placeholders/test values only | Alerting and legacy Supabase advisor findings remain separate work |
-| Backup / restore | Backups verified; restore blocked | Eight completed daily physical backups listed for 2026-08-01 through 2026-08-08; WAL-G active, PITR disabled | Restore drill is not executed; never restore over the real project |
+| Backup / restore | Backups verified; restore deferred | Eight completed daily physical backups listed for 2026-08-01 through 2026-08-08; WAL-G active, PITR disabled | Felipe deferred the paid isolated clone due budget; restore is not tested and no clone was created |
 | Terms / Privacy / LGPD | Blocked by legal/content decision | Acceptance versions stored and checklist documented | Actual bilingual legal documents/routes are absent |
 | Commit / PR | Draft PR #59 open | Small thematic implementation commits and this evidence update are published for review | No merge or production deploy is authorized |
 
@@ -90,6 +90,13 @@ merge, and Fly production deploy.
 - Supabase CLI 2.109.1 listed eight completed physical daily backups from
   2026-08-01 through 2026-08-08. WAL-G is active and PITR is disabled. This is
   backup-availability evidence, not a restore drill.
+- Felipe accepted the recommendation to defer the isolated restore clone while
+  budget is unavailable. No paid resource was created and the residual restore
+  risk remains explicit.
+- Added a low-frequency GitHub Actions monitor for both public `/health`
+  routes and the Fly backend `/readiness` route. It consumes included Actions
+  usage only after merge, runs every six hours, and is not claimed as real-time
+  5xx monitoring.
 - Current-tree secret scan found empty `.env.example` fields, CI placeholders,
   and test-only values; it did not find a deployed credential value. Fly and
   Supabase secret values were not read.

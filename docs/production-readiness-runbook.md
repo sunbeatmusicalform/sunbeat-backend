@@ -46,6 +46,15 @@ Suggested initial alert: more than 2% 5xx over five minutes, or three consecutiv
 readiness failures. Route it to a monitored channel before declaring this item
 complete.
 
+The branch includes `.github/workflows/production-health-monitor.yml` as a
+no-new-vendor baseline. After merge, it checks both public domains and backend
+readiness every six hours, and a failed run uses GitHub's existing workflow
+notification path. The deliberately low frequency limits included Actions
+usage; it is not real-time monitoring, does not calculate a 5xx rate, and does
+not replace a dedicated alert provider. Run it manually once after the approved
+production deploy to establish the first successful result. It must not be
+enabled by merging this branch before Felipe approves the release.
+
 ## Backup and restore
 
 Supabase database backups and Storage object recovery must be verified in the
@@ -67,6 +76,11 @@ Current status: eight completed daily physical backups were listed read-only on
 disabled. **The restore drill was not executed or evidenced.** Do not describe
 backup as restore-tested until all six steps have evidence, and never run the
 CLI restore command against the real project for this drill.
+
+On 2026-08-08 Felipe accepted deferring the isolated restore clone because it
+would add compute cost while budget is unavailable. No clone was created and no
+restore command was run. This is an explicit residual risk, not a successful
+restore test; revisit it when a temporary isolated project's cost is approved.
 
 ## Free asset retention
 
