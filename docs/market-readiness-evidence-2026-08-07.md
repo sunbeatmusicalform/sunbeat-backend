@@ -3,6 +3,8 @@
 Branch: `codex/market-readiness-p0-hardening`, based on production/main commit
 `405987c5a0cb6600c7297856dea5a18211e79b1b`.
 
+Draft review: https://github.com/sunbeatmusicalform/sunbeat-backend/pull/59
+
 No production deploy, merge, migration, schedule, DNS change, customer write,
 or Atabaque onboarding operation was performed.
 
@@ -51,7 +53,7 @@ The QA mock E2E test uses the isolated slug `qa-isolated-records` and covers:
 | CORS / headers / secrets | Code ready | Trusted hosts, explicit CORS surface, CSP/HSTS/security headers; secret scan found placeholders only | CSP needs browser verification in deployed QA |
 | Backup / restore | Blocked by credential/manual drill | Exact isolated restore drill documented | Backup must not be called tested yet |
 | Terms / Privacy / LGPD | Blocked by legal/content decision | Acceptance versions stored and checklist documented | Actual bilingual legal documents/routes are absent |
-| Commit / PR | Publishing | Authenticated as `sunbeatmusicalform`; thematic commits and draft PR are the final handoff step | No merge or deploy is authorized |
+| Commit / PR | Draft PR #59 open | Four thematic implementation commits plus this evidence update are published for review | No merge or deploy is authorized |
 
 ## Single manual QA credential step
 
