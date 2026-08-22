@@ -33,6 +33,7 @@ from app.services.airtable import (
 )
 from app.services.airtable_company_registry import sync_company_registry_to_airtable, update_company_registry_in_airtable
 from app.services.airtable_rights_clearance import sync_rights_clearance_to_airtable, update_rights_clearance_case_in_airtable
+from app.services.automation_outbox import enqueue_event
 from app.services.email import send_edit_link_email, send_submission_summary_email
 from app.services.edit_access import get_edit_policy, is_edit_token_authorized
 from app.services.workspace_config import (
@@ -385,6 +386,34 @@ def _get_submission_release_date(payload: WorkflowSubmissionPayload) -> Optional
     if _is_company_registry_payload(payload):
         return None
     return _normalize_release_date(getattr(payload.project, "release_date", None))
+
+
+def _queue_submission_automation(
+    payload: WorkflowSubmissionPayload,
+    *,
+    submission_id: str,
+) -> Dict[str, Any]:
+    """Persist a minimal, non-PII event without affecting the core submit flow."""
+    release_type = None
+    if _is_release_intake_payload(payload):
+        release_type = getattr(payload.identification, "release_type", None)
+
+    return enqueue_event(
+        workspace_slug=payload.workspace_slug,
+        event_type="submission.created",
+        entity_type="submission",
+        entity_id=submission_id,
+        payload={
+            "submission_id": submission_id,
+            "workflow_type": _submission_workflow_type(payload),
+            "form_version": _submission_form_version(payload),
+            "project_title": _get_submission_project_title(payload),
+            "release_date": _get_submission_release_date(payload),
+            "release_type": release_type,
+            "track_count": len(getattr(payload, "tracks", None) or []),
+            "source": "sunbeat",
+        },
+    )
 
 
 def _build_post_submit_email_subject(
@@ -2919,6 +2948,11 @@ def create_submission(
     }.get(notification_email_result["status"], "failed")
     notification_email_error = notification_email_result.get("error")
 
+    automation_result = _queue_submission_automation(
+        validated_payload,
+        submission_id=submission_id,
+    )
+
     response: Dict[str, Any] = {
         "ok": True,
         "submission_id": submission_id,
@@ -2946,6 +2980,7 @@ def create_submission(
             ),
             "email": email_status,
             "notification_email": notification_email_status,
+            "automation": automation_result["status"],
         },
     }
 

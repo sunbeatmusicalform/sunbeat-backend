@@ -252,6 +252,33 @@ def _track_row(
 
 
 class SubmissionUpsertTests(unittest.TestCase):
+    def test_automation_event_excludes_submitter_pii(self) -> None:
+        payload = validate_submission_payload(
+            {
+                **_release_payload(),
+                "workspace_slug": "sunbeat-qa",
+            }
+        )
+
+        with patch.object(
+            submissions_module,
+            "enqueue_event",
+            return_value={"status": "queued", "queued": True},
+        ) as enqueue_mock:
+            result = submissions_module._queue_submission_automation(
+                payload,
+                submission_id=SUBMISSION_ID,
+            )
+
+        self.assertEqual(result["status"], "queued")
+        event = enqueue_mock.call_args.kwargs
+        self.assertEqual(event["workspace_slug"], "sunbeat-qa")
+        self.assertEqual(event["entity_id"], SUBMISSION_ID)
+        self.assertEqual(event["payload"]["project_title"], "Projeto Teste")
+        self.assertNotIn("submitter_email", event["payload"])
+        self.assertNotIn("submitter_name", event["payload"])
+        self.assertNotIn("tracks", event["payload"])
+
     def test_create_submission_persists_revision_and_client_track_ids(self) -> None:
         fake_supabase = _FakeSupabase(
             {

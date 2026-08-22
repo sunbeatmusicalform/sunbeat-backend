@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.core.database import supabase
 from app.modules.portal_session import require_portal_session
 from app.services.airtable import _base_id, _request_json, _table_url
+from app.services.automation_outbox import automation_workspace_status
 from app.services.people_registry_invites import list_people_registry_invites_response
 from app.services.workspace_config import get_workflow_settings
 
@@ -367,5 +368,6 @@ async def get_portal_data(
             "drive": {"configured": bool(settings.GOOGLE_DRIVE_ENABLED and settings.GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON), "status": "online" if settings.GOOGLE_DRIVE_ENABLED else "disabled"},
             "email": {"configured": bool(settings.RESEND_API_KEY), "status": "online" if settings.RESEND_API_KEY else "disabled"},
             "lyrics_ai": {"configured": bool(getattr(settings, "GEMINI_LYRICS_API_KEY", None)), "status": "online" if getattr(settings, "GEMINI_LYRICS_API_KEY", None) else "disabled"},
+            "automation": automation_workspace_status(slug),
         },
     }

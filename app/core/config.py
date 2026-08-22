@@ -71,6 +71,17 @@ class Settings(BaseSettings):
     GOOGLE_DRIVE_CLEARANCE_MUSICAL_ROOT_FOLDER_ID: str | None = Field(default=None)
     GOOGLE_DRIVE_CLEARANCE_NON_MUSICAL_ROOT_FOLDER_ID: str | None = Field(default=None)
 
+    # Orquestracao externa. Fica desligada e sem tenant permitido por padrao.
+    # Regras de negocio e isolamento continuam no backend Sunbeat; o webhook
+    # recebe apenas eventos minimos, assinados e persistidos no outbox.
+    ACTIVEPIECES_ENABLED: bool = Field(default=False)
+    ACTIVEPIECES_WEBHOOK_URL: str | None = Field(default=None)
+    ACTIVEPIECES_WEBHOOK_SECRET: str | None = Field(default=None)
+    ACTIVEPIECES_WORKSPACE_ALLOWLIST: str = Field(default="")
+    ACTIVEPIECES_WORKSPACE_DENYLIST: str = Field(default="atabaque")
+    ACTIVEPIECES_TIMEOUT_SECONDS: int = Field(default=10)
+    ACTIVEPIECES_MAX_ATTEMPTS: int = Field(default=6)
+
 
     # API interna — admin manual e futura Setup AI
     INTERNAL_ADMIN_TOKEN: str | None = Field(default=None)
