@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from app.core.config import settings
 from app.core.database import supabase
 from app.modules.admin_config import router as admin_config_router
+from app.modules.automation import router as automation_router
 from app.modules.ai_gateway import router as ai_gateway_router
 from app.modules.drive_config import router as drive_config_router
 from app.modules.email_config import router as email_config_router
@@ -130,6 +131,7 @@ async def security_and_observability_headers(request: Request, call_next):
     return response
 
 app.include_router(admin_config_router)
+app.include_router(automation_router)
 app.include_router(drafts_router)
 app.include_router(drive_config_router)
 app.include_router(email_config_router)
