@@ -66,3 +66,21 @@ migration, follow the isolation gate in
    audit row.
 
 There is intentionally no production scheduler in this PR. Scheduling is a separate approval after the QA replay and restore procedures have evidence.
+
+## QA validation result
+
+The complete isolated drill ran on 2026-08-22 and passed. The temporary
+Supabase preview branch received the migration, the Fly QA backend enqueued one
+synthetic non-PII event, Activepieces accepted the signed delivery and a second
+dispatch claimed zero events. Atabaque remained blocked in code and in the QA
+denylist, and the temporary database contained zero Atabaque outbox rows.
+
+The QA app was restored, all temporary Activepieces secrets were removed and
+the preview branch was deleted. Full identifiers, timestamps, access checks,
+cost estimate and teardown evidence are recorded in
+[`activepieces-qa-isolation-runbook.md`](activepieces-qa-isolation-runbook.md).
+
+This validates the transport contract and the backend idempotency boundary. It
+does not authorize production activation. Before a flow performs email, Drive,
+Airtable or any other external side effect, add persistent deduplication inside
+the automation layer and repeat the replay test in isolated QA.
