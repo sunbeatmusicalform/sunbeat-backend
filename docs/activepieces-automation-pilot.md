@@ -47,11 +47,40 @@ The Activepieces flow must reject stale timestamps, verify the signature with th
 
 ## QA activation and manual dispatch
 
-1. Apply the reviewed Supabase migration. Do not schedule anything yet.
-2. Create an isolated Activepieces webhook flow and keep it disabled while mapping fields.
-3. Configure the backend only for the isolated QA workspace.
-4. Inspect due events without delivery: `POST /internal/automations/dispatch?dry_run=true&workspace_slug=<qa-slug>`.
-5. Enable the Activepieces flow, then explicitly dispatch: `POST /internal/automations/dispatch?dry_run=false&workspace_slug=<qa-slug>`.
-6. Confirm a second call does not redeliver the same event and inspect the audit row.
+The Fly app name or hostname is not proof of database isolation. Before any
+migration, follow the isolation gate in
+[`activepieces-qa-isolation-runbook.md`](activepieces-qa-isolation-runbook.md).
+
+1. Confirm that QA has a dedicated Supabase project or database branch and
+   that its project ref differs from production.
+2. Run `supabase db push --dry-run` against that QA ref and review the single
+   expected migration.
+3. Apply the reviewed migration only to the isolated QA database. Do not
+   schedule anything yet.
+4. Create an isolated Activepieces webhook flow and keep it disabled while
+   mapping fields.
+5. Configure the backend only for the isolated QA workspace.
+6. Inspect due events without delivery: `POST /internal/automations/dispatch?dry_run=true&workspace_slug=<qa-slug>`.
+7. Enable the Activepieces flow, then explicitly dispatch: `POST /internal/automations/dispatch?dry_run=false&workspace_slug=<qa-slug>`.
+8. Confirm a second call does not redeliver the same event and inspect the
+   audit row.
 
 There is intentionally no production scheduler in this PR. Scheduling is a separate approval after the QA replay and restore procedures have evidence.
+
+## QA validation result
+
+The complete isolated drill ran on 2026-08-22 and passed. The temporary
+Supabase preview branch received the migration, the Fly QA backend enqueued one
+synthetic non-PII event, Activepieces accepted the signed delivery and a second
+dispatch claimed zero events. Atabaque remained blocked in code and in the QA
+denylist, and the temporary database contained zero Atabaque outbox rows.
+
+The QA app was restored, all temporary Activepieces secrets were removed and
+the preview branch was deleted. Full identifiers, timestamps, access checks,
+cost estimate and teardown evidence are recorded in
+[`activepieces-qa-isolation-runbook.md`](activepieces-qa-isolation-runbook.md).
+
+This validates the transport contract and the backend idempotency boundary. It
+does not authorize production activation. Before a flow performs email, Drive,
+Airtable or any other external side effect, add persistent deduplication inside
+the automation layer and repeat the replay test in isolated QA.
